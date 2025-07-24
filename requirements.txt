@@ -7,3 +7,9 @@ chromadb
 langchain-chroma
 pypdf
 tiktoken 
+unstructured
+pytesseract
+Pillow
+python-pptx
+python-docx 
+nltk 

@@ -1,0 +1,4 @@
+/uploads/
+/chroma_db/
+.env
+.DS_Store
