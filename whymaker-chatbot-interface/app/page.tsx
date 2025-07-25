@@ -21,20 +21,22 @@ interface ChatSession {
 }
 
 const modelMapping: { [key: string]: string } = {
-  "Quick & Dumb": "gpt-4.1-nano",
-  "Standard": "o4-mini",
+  "Fast": "gpt-4.1-nano",
+  "Smart": "o4-mini",
   "Deep Reasoning": "o3",
 };
 
 export default function ChatGPTClone() {
-  const [messages, setMessages] = useState<any[]>([])
+  const [chatHistories, setChatHistories] = useState<{ [key: string]: any[] }>({})
   // Ref to the Radix ScrollArea root for auto-scroll
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const [input, setInput] = useState("")
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([])
   const [currentChatId, setCurrentChatId] = useState<string>("")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
-  const [selectedModel, setSelectedModel] = useState<string>("Standard")
+  const [selectedModel, setSelectedModel] = useState<string>("Fast")
+
+  const messages = chatHistories[currentChatId] || []
 
   // Initialize with a default chat session
   useEffect(() => {
@@ -46,6 +48,7 @@ export default function ChatGPTClone() {
     }
     setChatSessions([defaultChat])
     setCurrentChatId("default")
+    setChatHistories({ default: [] })
   }, [])
 
   // Update chat session's last message and timestamp
@@ -87,13 +90,11 @@ export default function ChatGPTClone() {
 
     setChatSessions((prev) => [newChat, ...prev])
     setCurrentChatId(newChatId)
-    setMessages([])
+    setChatHistories(prev => ({ ...prev, [newChatId]: [] }))
   }
 
   const selectChat = (chatId: string) => {
     setCurrentChatId(chatId)
-    // In a real app, you'd load the messages for this chat from storage
-    setMessages([])
   }
 
   const formatTime = (date: Date) => {
@@ -115,20 +116,24 @@ export default function ChatGPTClone() {
     const words = fullText.split(" ");
     let wordIndex = 0;
     const interval = setInterval(() => {
-      setMessages((prevMessages) =>
-        prevMessages.map((msg) => {
-          if (msg.id === messageId) {
-            return { ...msg, content: words.slice(0, wordIndex + 1).join(" ") };
-          }
-          return msg;
-        }),
-      );
+      setChatHistories((prevHistories) => {
+        const currentMessages = prevHistories[currentChatId] || [];
+        return {
+          ...prevHistories,
+          [currentChatId]: currentMessages.map((msg) => {
+            if (msg.id === messageId) {
+              return { ...msg, content: words.slice(0, wordIndex + 1).join(" ") };
+            }
+            return msg;
+          }),
+        }
+      });
       wordIndex++;
       if (wordIndex >= words.length) {
         clearInterval(interval);
       }
     }, 50); // 150ms per word; adjust for speed
-  }, []);
+  }, [currentChatId]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
@@ -146,6 +151,8 @@ export default function ChatGPTClone() {
       // Don’t send an empty question unless you’ve attached files
       if (!input.trim() && selectedFiles.length === 0) return
 
+      const currentMessages = chatHistories[currentChatId] || [];
+
       // Build the new user message (with its files)
       const userMessage = {
         id: `user-${Date.now()}`,
@@ -157,32 +164,30 @@ export default function ChatGPTClone() {
       const initialBotMessage = {
         id: botMessageId,
         role: "assistant",
-        content: "",
+        content: "", // Start with empty content for animation
       }
 
-      // Optimistic UI update
-      setMessages((prev) => [...prev, userMessage, initialBotMessage])
+      // Add user and placeholder assistant messages
+      setChatHistories(prev => ({
+        ...prev,
+        [currentChatId]: [...currentMessages, userMessage, initialBotMessage]
+      }));
       setInput("")
 
       // 1) Collect *all* attachments from prior messages + the new one
-      const historyFiles = messages.flatMap((m) => m.files ?? [])
-      const attachmentsToSend = [...historyFiles, ...selectedFiles]
+      const historyFiles = currentMessages.flatMap((m: any) => m.files || []);
+      const attachmentsToSend = [...historyFiles, ...selectedFiles];
+      setSelectedFiles([])
 
       // 2) Clear the file picker
-      setSelectedFiles([])
 
       // 3) Build the multipart/form-data
       const form = new FormData()
       form.append("question", input)
       // Include the new message in the history we send
-      form.append(
-        "chat_history",
-        JSON.stringify(
-          [...messages, userMessage].map(({ role, content }) => ({ role, content }))
-        )
-      )
+      form.append("chat_history", JSON.stringify(currentMessages.map(({ role, content }) => ({ role, content }))))
       form.append("model", modelMapping[selectedModel])
-      attachmentsToSend.forEach((f) => form.append("files", f))
+      attachmentsToSend.forEach(f => form.append("files", f))
 
       // 4) Send to backend
       const res = await fetch("http://localhost:8000/api/chat", {
@@ -190,22 +195,22 @@ export default function ChatGPTClone() {
         body: form,
       })
       const data = await res.json()
-      const answer = data.answer || "I encountered an error."
-      const summaryTitle = data.title || ""
-
-      // Update chat title if needed
+      const answer = data.answer || 'I encountered an error.'
+      const summaryTitle = data.title || ''
+      // Update the chat session title with AI summary
       if (summaryTitle) {
         setChatSessions((prev) =>
           prev.map((chat) =>
-            chat.id === currentChatId ? { ...chat, title: summaryTitle } : chat
+            chat.id === currentChatId
+              ? { ...chat, title: summaryTitle }
+              : chat
           )
         )
       }
-
-      // Animate the reply
+      // Animate the assistant's response
       typeWriterEffect(botMessageId, answer)
     },
-    [input, messages, selectedFiles, selectedModel, typeWriterEffect, currentChatId]
+    [input, currentChatId, chatHistories, selectedFiles, selectedModel, typeWriterEffect],
   )
 
   return (
@@ -314,7 +319,7 @@ export default function ChatGPTClone() {
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="start"
-              className="w-48"
+              className="w-64"
               style={{
                 backgroundColor: "var(--bg-elevated-primary)",
                 borderColor: "var(--border-default)",
@@ -322,32 +327,32 @@ export default function ChatGPTClone() {
               }}
             >
               <DropdownMenuItem
-                onClick={() => setSelectedModel("Quick & Dumb")}
+                onClick={() => setSelectedModel("Fast")}
                 className="cursor-pointer focus:outline-none flex flex-col items-start relative py-2"
                 style={{ color: "var(--text-primary)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--bg-tertiary)"; e.currentTarget.style.outline = "none"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
               >
-                <span>Quick & Dumb</span>
+                <span>Fast</span>
                 <span className="text-xs -mt-0.5 leading-[.5rem]" style={{ color: "var(--text-tertiary)" }}>
                   Model - GPT 4.1 Nano
                 </span>
-                {selectedModel === "Quick & Dumb" && (
+                {selectedModel === "Fast" && (
                   <CheckIcon className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4" />
                 )}
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => setSelectedModel("Standard")}
+                onClick={() => setSelectedModel("Smart")}
                 className="cursor-pointer focus:outline-none flex flex-col items-start py-2 relative"
                 style={{ color: "var(--text-primary)" }}
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--bg-tertiary)"; e.currentTarget.style.outline = "none"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
               >
-                <span>Standard</span>
+                <span>Smart</span>
                 <span className="text-xs -mt-0.5 leading-[.5rem]" style={{ color: "var(--text-tertiary)" }}>
                   Model - o4-mini
                 </span>
-                {selectedModel === "Standard" && (
+                {selectedModel === "Smart" && (
                   <CheckIcon className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4" />
                 )}
               </DropdownMenuItem>
@@ -358,7 +363,12 @@ export default function ChatGPTClone() {
                 onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--bg-tertiary)"; e.currentTarget.style.outline = "none"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
               >
-                <span>Deep Reasoning</span>
+                <div className="flex items-center space-x-2">
+                  <span>Deep Reasoning</span>
+                  <span className="border border-red-600/70 text-red-600/70 text-[10px] uppercase px-1 py-[0.5px] rounded">
+                    EXPENSIVE
+                  </span>
+                </div>
                 <span className="text-xs -mt-0.5 leading-[.5rem]" style={{ color: "var(--text-tertiary)" }}>
                   Model - o3
                 </span>
