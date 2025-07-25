@@ -8,7 +8,11 @@ from langchain.schema import Document as TextDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
-from langchain.chains import RetrievalQA
+from typing import Optional
+from langchain.chains import RetrievalQA, create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 import json
 
 load_dotenv()
@@ -128,52 +132,91 @@ def process_documents(folder_path="uploads"):
         json.dump(processed, f)
     print("  - Done.", flush=True)
 
-def setup_rag_chain():
+def setup_rag_chain(model_name: str = "o4-mini"):
     """
-    Sets up the LangChain RetrievalQA chain.
+    Sets up a conversational LangChain RAG chain for a given model.
     """
-    global rag_chain
-    
-    print("Setting up RAG chain...", flush=True)
+    print(f"Setting up RAG chain with model: {model_name}...", flush=True)
     embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
     vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+    retriever = vectordb.as_retriever()
     
-    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
-    
-    rag_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vectordb.as_retriever(),
-        return_source_documents=True
+    llm = ChatOpenAI(model=model_name, temperature=0)
+
+    # Contextualize question prompt
+    contextualize_q_system_prompt = (
+        "Given a chat history and the latest user question "
+        "which might reference context in the chat history, "
+        "formulate a standalone question which can be understood "
+        "without the chat history. Do NOT answer the question, "
+        "just reformulate it if needed and otherwise return it as is."
     )
-    print("RAG chain is ready.", flush=True)
+    contextualize_q_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", contextualize_q_system_prompt),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ]
+    )
+    history_aware_retriever = create_history_aware_retriever(
+        llm, retriever, contextualize_q_prompt
+    )
+
+    # Answering prompt
+    qa_system_prompt = (
+        "You are an assistant for question-answering tasks. "
+        "Use the following pieces of retrieved context to answer "
+        "the question. If you don't know the answer, just say "
+        "that you don't know. Use three sentences maximum and keep the "
+        "answer concise."
+        "\n\n"
+        "{context}"
+    )
+    qa_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", qa_system_prompt),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ]
+    )
+
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+
+    # Return the chain instead of setting a global variable
+    return create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
 
-def query_rag(question):
+def query_rag(question: str, chat_history: Optional[list] = None, model_name: str = "o4-mini"):
     """
-
-    Queries the RAG system with a question.
+    Queries the RAG system with a question, history, and model name.
     """
-    if not rag_chain:
-        return "RAG chain is not set up."
+    # Create a new chain for each query, configured with the selected model
+    rag_chain = setup_rag_chain(model_name)
+
+    if chat_history is None:
+        chat_history = []
         
-    result = rag_chain.invoke({"query": question})
+    converted_chat_history = []
+    for message in chat_history:
+        if message['role'] == 'user':
+            converted_chat_history.append(HumanMessage(content=message['content']))
+        elif message['role'] == 'assistant' and message['content']:
+            converted_chat_history.append(AIMessage(content=message['content']))
+
+    result = rag_chain.invoke({"input": question, "chat_history": converted_chat_history})
     
+    answer = result.get("answer", "I don't have enough information to answer.")
+
     # --- Debugging: Print retrieved source documents ---
-    if "source_documents" in result:
+    if "context" in result and result["context"]:
         print("\n--- Retrieved Sources ---", flush=True)
-        for doc in result["source_documents"]:
+        for doc in result["context"]:
             source = doc.metadata.get('source', 'Unknown source')
             content_preview = doc.page_content[:120].replace('\n', ' ') + "..."
             print(f"  - From: {source}\n    Preview: \"{content_preview}\"", flush=True)
         print("-------------------------\n", flush=True)
-    # --- End Debugging ---
-
-    # Check for source documents
-    if result.get("source_documents"):
-        return result['result']
-    else:
-        return "I don't have enough information to answer."
+    
+    return answer
 
 
 def main():
@@ -185,7 +228,7 @@ def main():
     # Ingest documents (incremental): process new or updated files
     process_documents()
 
-    setup_rag_chain()
+    # setup_rag_chain() # This line is removed as per the edit hint
     
     print("\nRAG system is ready. Ask your questions!", flush=True)
     print("Type 'exit' to quit.", flush=True)
