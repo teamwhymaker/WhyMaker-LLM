@@ -8,12 +8,15 @@ from langchain.schema import Document as TextDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_chroma import Chroma
-from typing import Optional
+from typing import Optional, List
 from langchain.chains import RetrievalQA, create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 import json
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
 
 load_dotenv()
 
@@ -132,16 +135,35 @@ def process_documents(folder_path="uploads"):
         json.dump(processed, f)
     print("  - Done.", flush=True)
 
-def setup_rag_chain(model_name: str = "o4-mini"):
+class CompositeRetriever(BaseRetriever):
+    """
+    A custom retriever that combines results from a base retriever
+    with a list of extra, in-memory documents to make it LCEL-compatible.
+    """
+    base_retriever: BaseRetriever
+    extra_docs: List[Document]
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        """
+        Get documents from the base retriever and combine with extra docs.
+        """
+        base_docs = self.base_retriever.get_relevant_documents(query, callbacks=run_manager.get_child())
+        return base_docs + self.extra_docs
+
+
+def setup_rag_chain(model_name: str = "o4-mini", retriever: BaseRetriever = None):
     """
     Sets up a conversational LangChain RAG chain for a given model.
     """
     print(f"Setting up RAG chain with model: {model_name}...", flush=True)
-    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-    vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
-    retriever = vectordb.as_retriever()
+    if not retriever:
+        embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+        vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+        retriever = vectordb.as_retriever()
     
-    llm = ChatOpenAI(model=model_name, temperature=0)
+    llm = ChatOpenAI(model=model_name)
 
     # Contextualize question prompt
     contextualize_q_system_prompt = (
@@ -186,37 +208,46 @@ def setup_rag_chain(model_name: str = "o4-mini"):
     return create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
 
-def query_rag(question: str, chat_history: Optional[list] = None, model_name: str = "o4-mini"):
+def query_rag(
+    question: str,
+    chat_history: Optional[list] = None,
+    model_name: str = "o4-mini",
+    extra_docs: Optional[list] = None,
+):
     """
     Queries the RAG system with a question, history, and model name.
     """
-    # Create a new chain for each query, configured with the selected model
-    rag_chain = setup_rag_chain(model_name)
+    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+    vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+    base_retriever = vectordb.as_retriever()
+
+    if extra_docs:
+        retriever = CompositeRetriever(base_retriever=base_retriever, extra_docs=extra_docs)
+    else:
+        retriever = base_retriever
+
+    # Create a new chain for each query, configured with the selected model and retriever
+    rag_chain = setup_rag_chain(model_name, retriever=retriever)
 
     if chat_history is None:
         chat_history = []
         
-    converted_chat_history = []
-    for message in chat_history:
-        if message['role'] == 'user':
-            converted_chat_history.append(HumanMessage(content=message['content']))
-        elif message['role'] == 'assistant' and message['content']:
-            converted_chat_history.append(AIMessage(content=message['content']))
-
-    result = rag_chain.invoke({"input": question, "chat_history": converted_chat_history})
+    result = rag_chain.invoke({"input": question, "chat_history": chat_history})
     
     answer = result.get("answer", "I don't have enough information to answer.")
 
     # --- Debugging: Print retrieved source documents ---
-    if "context" in result and result["context"]:
-        print("\n--- Retrieved Sources ---", flush=True)
-        for doc in result["context"]:
-            source = doc.metadata.get('source', 'Unknown source')
-            content_preview = doc.page_content[:120].replace('\n', ' ') + "..."
-            print(f"  - From: {source}\n    Preview: \"{content_preview}\"", flush=True)
-        print("-------------------------\n", flush=True)
+    # This part of the original code was not included in the new_code,
+    # so it is removed to match the new_code's structure.
+    # if result.get("source_documents"):
+    #     print("\nRetrieved documents:", flush=True)
+    #     for doc in result.get("source_documents"):
+    #         source = doc.metadata.get("source")
+    #         content_preview = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
+    #         print(f"  - From: {source}\n    Preview: \"{content_preview}\"", flush=True)
+    # print("-------------------------\n", flush=True)
     
-    return answer
+    return answer, None # No title generation for now
 
 
 def main():

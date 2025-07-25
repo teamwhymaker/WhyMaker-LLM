@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { PlusIcon, MessageSquareIcon, UserIcon, BotIcon, CheckIcon } from "lucide-react" // Import CheckIcon
+import { PlusIcon, MessageSquareIcon, UserIcon, BotIcon, CheckIcon, FileTextIcon } from "lucide-react"
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -143,57 +143,69 @@ export default function ChatGPTClone() {
   const handleSubmit = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault()
-      if (!input.trim()) return
+      // Don’t send an empty question unless you’ve attached files
+      if (!input.trim() && selectedFiles.length === 0) return
 
+      // Build the new user message (with its files)
       const userMessage = {
         id: `user-${Date.now()}`,
         role: "user",
         content: input,
+        files: selectedFiles,
       }
-
       const botMessageId = `bot-${Date.now()}`
       const initialBotMessage = {
         id: botMessageId,
         role: "assistant",
-        content: "", // Start with empty content for animation
+        content: "",
       }
 
-      // Add user and placeholder assistant messages
-      setMessages((prevMessages) => [...prevMessages, userMessage, initialBotMessage])
+      // Optimistic UI update
+      setMessages((prev) => [...prev, userMessage, initialBotMessage])
       setInput("")
 
-      // Call backend API for real response
-      try {
-        const res = await fetch('http://localhost:8000/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            question: input,
-            chat_history: messages.map(({ id, ...rest }) => rest),
-            model: modelMapping[selectedModel], // Use mapping here
-          }),
-        })
-        const data = await res.json()
-        const answer = data.answer || 'I encountered an error.'
-        const summaryTitle = data.title || ''
-        // Update the chat session title with AI summary
-        if (summaryTitle) {
-          setChatSessions((prev) =>
-            prev.map((chat) =>
-              chat.id === currentChatId
-                ? { ...chat, title: summaryTitle }
-                : chat
-            )
+      // 1) Collect *all* attachments from prior messages + the new one
+      const historyFiles = messages.flatMap((m) => m.files ?? [])
+      const attachmentsToSend = [...historyFiles, ...selectedFiles]
+
+      // 2) Clear the file picker
+      setSelectedFiles([])
+
+      // 3) Build the multipart/form-data
+      const form = new FormData()
+      form.append("question", input)
+      // Include the new message in the history we send
+      form.append(
+        "chat_history",
+        JSON.stringify(
+          [...messages, userMessage].map(({ role, content }) => ({ role, content }))
+        )
+      )
+      form.append("model", modelMapping[selectedModel])
+      attachmentsToSend.forEach((f) => form.append("files", f))
+
+      // 4) Send to backend
+      const res = await fetch("http://localhost:8000/api/chat", {
+        method: "POST",
+        body: form,
+      })
+      const data = await res.json()
+      const answer = data.answer || "I encountered an error."
+      const summaryTitle = data.title || ""
+
+      // Update chat title if needed
+      if (summaryTitle) {
+        setChatSessions((prev) =>
+          prev.map((chat) =>
+            chat.id === currentChatId ? { ...chat, title: summaryTitle } : chat
           )
-        }
-        // Animate the assistant's response
-        typeWriterEffect(botMessageId, answer)
-      } catch (err) {
-        console.error('Chat API error:', err)
-        typeWriterEffect(botMessageId, 'Sorry, something went wrong.')
+        )
       }
+
+      // Animate the reply
+      typeWriterEffect(botMessageId, answer)
     },
-    [input, typeWriterEffect, messages, selectedModel], // Add selectedModel to dependencies
+    [input, messages, selectedFiles, selectedModel, typeWriterEffect, currentChatId]
   )
 
   return (
@@ -486,27 +498,49 @@ export default function ChatGPTClone() {
                 {messages.map((message) => (
                   <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
                     {message.role === "user" ? (
-                      // User message - right side with chat bubble
-                      <div className="flex items-start max-w-[70%]">
-                        <div
-                          className="px-4 py-2 rounded-2xl"
-                          style={{
-                            backgroundColor: "var(--bg-secondary)", // Same color as input bar
-                            color: "var(--text-primary)",
-                          }}
-                        >
-                          <div className="text-sm markdown" style={{ color: "var(--text-primary)" }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {message.content}
-                            </ReactMarkdown>
+                      // User message - separate bubbles for attachments and text
+                      <div className="flex flex-col items-end max-w-[70%] space-y-1">
+                        {message.files && message.files.map((file: File, idx: number) => (
+                          <div
+                            key={idx}
+                            className="p-2 rounded-lg flex items-center space-x-3 mb-1"
+                            style={{
+                              backgroundColor: "transparent",
+                              border: "1px solid var(--border-default)",
+                            }}
+                          >
+                            <FileTextIcon className="w-5 h-5 flex-shrink-0" style={{ color: "var(--text-secondary)" }} />
+                            <div className="flex flex-col overflow-hidden">
+                              <span className="text-sm font-medium truncate">{file.name}</span>
+                              <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                                {file.type.split('/')[1]?.toUpperCase() || 'FILE'}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                        <div
-                          className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ml-3"
-                          style={{ backgroundColor: "var(--text-accent)" }}
-                        >
-                          <UserIcon className="w-4 h-4" style={{ color: "var(--text-inverted)" }} />
-                        </div>
+                        ))}
+                        {message.content && (
+                          <div className="flex items-start">
+                            <div
+                              className="px-4 py-2 rounded-2xl"
+                              style={{
+                                backgroundColor: "var(--bg-secondary)",
+                                color: "var(--text-primary)",
+                              }}
+                            >
+                              <div className="text-sm markdown" style={{ color: "var(--text-secondary)" }}>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {message.content}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                            <div
+                              className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ml-3"
+                              style={{ backgroundColor: "var(--text-accent)" }}
+                            >
+                              <UserIcon className="w-4 h-4" style={{ color: "var(--text-inverted)" }} />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       // Bot message
