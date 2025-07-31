@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+google-cloud-storage
 openai
 python-dotenv
 langchain

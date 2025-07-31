@@ -14,6 +14,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredImageLoader
 from langchain.schema import HumanMessage, AIMessage, Document as TextDocument
 from docx import Document as DocxDocument
+from google.cloud import storage
 
 # Initialize RAG chain and database
 if not os.path.exists("chroma_db") or not os.path.exists("processed_files.json"):
@@ -34,6 +35,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Google Cloud Storage setup ---
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+storage_client = storage.Client()
+bucket = storage_client.bucket(GCS_BUCKET_NAME)
+
+UPLOAD_DIR = "uploads"
+# Ensure local folder exists
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Download any existing files from GCS → local UPLOAD_DIR
+for blob in bucket.list_blobs():
+    local_path = os.path.join(UPLOAD_DIR, blob.name)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    blob.download_to_filename(local_path)
+
+# --- Ingest all existing docs on startup ---
+@app.on_event("startup")
+async def on_startup():
+    process_documents(folder_path=UPLOAD_DIR)
 
 class Query(BaseModel):
     question: str
@@ -121,4 +142,24 @@ async def chat(
     else:
         title = None
 
-    return {"answer": answer, "title": title} 
+    return {"answer": answer, "title": title}
+
+@app.post("/api/upload")
+async def upload(files: List[UploadFile] = File(...)):
+    """
+    Save each uploaded file to both GCS and local disk,
+    then re-run process_documents() to ingest them.
+    """
+    saved = []
+    for upload in files:
+        # Upload to GCS
+        blob = bucket.blob(upload.filename)
+        blob.upload_from_file(await upload.read(), content_type=upload.content_type)
+        saved.append(upload.filename)
+        # Also write locally so process_documents can pick it up
+        local_path = os.path.join(UPLOAD_DIR, upload.filename)
+        blob.download_to_filename(local_path)
+
+    # Re-process only the uploads folder so these docs become queryable
+    process_documents(folder_path=UPLOAD_DIR)
+    return {"status": "success", "uploaded": saved} 

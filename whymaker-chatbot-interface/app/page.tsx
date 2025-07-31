@@ -121,11 +121,11 @@ export default function ChatGPTClone() {
         return {
           ...prevHistories,
           [currentChatId]: currentMessages.map((msg) => {
-            if (msg.id === messageId) {
-              return { ...msg, content: words.slice(0, wordIndex + 1).join(" ") };
-            }
-            return msg;
-          }),
+          if (msg.id === messageId) {
+            return { ...msg, content: words.slice(0, wordIndex + 1).join(" ") };
+          }
+          return msg;
+        }),
         }
       });
       wordIndex++;
@@ -193,22 +193,22 @@ export default function ChatGPTClone() {
       const res = await fetch("http://localhost:8000/api/chat", {
         method: "POST",
         body: form,
-      })
-      const data = await res.json()
-      const answer = data.answer || 'I encountered an error.'
-      const summaryTitle = data.title || ''
-      // Update the chat session title with AI summary
-      if (summaryTitle) {
-        setChatSessions((prev) =>
-          prev.map((chat) =>
-            chat.id === currentChatId
-              ? { ...chat, title: summaryTitle }
-              : chat
+        })
+        const data = await res.json()
+        const answer = data.answer || 'I encountered an error.'
+        const summaryTitle = data.title || ''
+        // Update the chat session title with AI summary
+        if (summaryTitle) {
+          setChatSessions((prev) =>
+            prev.map((chat) =>
+              chat.id === currentChatId
+                ? { ...chat, title: summaryTitle }
+                : chat
+            )
           )
-        )
-      }
-      // Animate the assistant's response
-      typeWriterEffect(botMessageId, answer)
+        }
+        // Animate the assistant's response
+        typeWriterEffect(botMessageId, answer)
     },
     [input, currentChatId, chatHistories, selectedFiles, selectedModel, typeWriterEffect],
   )
@@ -364,7 +364,7 @@ export default function ChatGPTClone() {
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
               >
                 <div className="flex items-center space-x-2">
-                  <span>Deep Reasoning</span>
+                <span>Deep Reasoning</span>
                   <span className="border border-red-600/70 text-red-600/70 text-[10px] uppercase px-1 py-[0.5px] rounded">
                     EXPENSIVE
                   </span>
@@ -530,25 +530,25 @@ export default function ChatGPTClone() {
                         ))}
                         {message.content && (
                           <div className="flex items-start">
-                            <div
-                              className="px-4 py-2 rounded-2xl"
-                              style={{
+                        <div
+                          className="px-4 py-2 rounded-2xl"
+                          style={{
                                 backgroundColor: "var(--bg-secondary)",
-                                color: "var(--text-primary)",
-                              }}
-                            >
+                            color: "var(--text-primary)",
+                          }}
+                        >
                               <div className="text-sm markdown" style={{ color: "var(--text-secondary)" }}>
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                  {message.content}
-                                </ReactMarkdown>
-                              </div>
-                            </div>
-                            <div
-                              className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ml-3"
-                              style={{ backgroundColor: "var(--text-accent)" }}
-                            >
-                              <UserIcon className="w-4 h-4" style={{ color: "var(--text-inverted)" }} />
-                            </div>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {message.content}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                        <div
+                          className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ml-3"
+                          style={{ backgroundColor: "var(--text-accent)" }}
+                        >
+                          <UserIcon className="w-4 h-4" style={{ color: "var(--text-inverted)" }} />
+                        </div>
                           </div>
                         )}
                       </div>
