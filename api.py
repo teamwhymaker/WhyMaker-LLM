@@ -16,12 +16,6 @@ from langchain.schema import HumanMessage, AIMessage, Document as TextDocument
 from docx import Document as DocxDocument
 from google.cloud import storage
 
-# Initialize RAG chain and database
-if not os.path.exists("chroma_db") or not os.path.exists("processed_files.json"):
-    process_documents()
-# Remove this line:
-# setup_rag_chain()
-
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
