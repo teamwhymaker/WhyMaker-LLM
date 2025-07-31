@@ -87,11 +87,38 @@ async def chat(
             ephemeral_chunks.extend(splitter.split_documents(docs))
 
     # 3) Run the RAG query, passing these ephemeral chunks
-    answer, title = query_rag(
+    answer, _ = query_rag(
         question,
         converted_history,
         model_name=model,
-        extra_docs=ephemeral_chunks,    # NEW parameter
+        extra_docs=ephemeral_chunks,
     )
+
+    # 4) Generate a chat title on the first user message
+    if len(history_list) == 0:
+        try:
+            title_prompt = (
+                "Summarize the following user question into a 3-5 word title. "
+                f"Be concise and representative of the main topic.\n\n"
+                f"Question: '{question}'"
+            )
+            response = client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[
+                    {"role": "system", "content": "You are a title generator for WhyMaker."},
+                    {"role": "user", "content": title_prompt},
+                ],
+                max_tokens=15,
+                temperature=0.2,
+            )
+            if response and response.choices:
+                title = response.choices[0].message.content.strip().replace('"', "")
+            else:
+                title = question[:30] + "..."
+        except Exception as e:
+            print(f"Title generation failed: {e}")
+            title = question[:30] + "..."
+    else:
+        title = None
 
     return {"answer": answer, "title": title} 

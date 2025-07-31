@@ -159,9 +159,9 @@ def setup_rag_chain(model_name: str = "o4-mini", retriever: BaseRetriever = None
     """
     print(f"Setting up RAG chain with model: {model_name}...", flush=True)
     if not retriever:
-        embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-        vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
-        retriever = vectordb.as_retriever()
+      embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+      vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+      retriever = vectordb.as_retriever()
     
     llm = ChatOpenAI(model=model_name)
 
@@ -186,13 +186,20 @@ def setup_rag_chain(model_name: str = "o4-mini", retriever: BaseRetriever = None
 
     # Answering prompt
     qa_system_prompt = (
-        "You are an assistant for question-answering tasks. "
-        "Use the following pieces of retrieved context to answer "
-        "the question. If you don't know the answer, just say "
-        "that you don't know. Use three sentences maximum and keep the "
-        "answer concise."
-        "\n\n"
-        "{context}"
+        "You are a world-class business and educational assistant, specifically tailored for the WhyMaker team. "
+        "Your primary goal is to help WhyMaker staff create high-quality materials, including sales scripts, "
+        "marketing collateral, lesson plans, and more.\\n\\n"
+        "To answer the user's request, synthesize information from two sources: "
+        "1. The provided internal WhyMaker documents (retrieved context below). "
+        "2. Your general knowledge for broader context and information not available in the documents.\\n\\n"
+        "CRITICAL INSTRUCTIONS:\\n"
+        "- Provide comprehensive, well-structured, and clear responses. Do not be overly brief.\\n"
+        "- Use Markdown formatting (like ### Headers, * Bullet Points, and **bold text**) to improve readability "
+        "and ensure your answers are easy to interpret.\\n"
+        "- If the provided context doesn't contain a specific answer, clearly state that the information isn't "
+        "in WhyMaker's documents. Then, provide the best possible answer based on your general knowledge, "
+        "while noting it may not be specific to WhyMaker.\\n\\n"
+        "CONTEXT:\\n{context}"
     )
     qa_prompt = ChatPromptTemplate.from_messages(
         [
