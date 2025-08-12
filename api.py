@@ -24,7 +24,13 @@ app = FastAPI()
 # Allow CORS for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://whymaker.com",
+        "https://www.whymaker.com",
+        # Add your Vercel app URL below
+        "https://why-maker-llm.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
