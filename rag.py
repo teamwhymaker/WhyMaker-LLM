@@ -31,14 +31,32 @@ DB_DIR = os.getenv("WHYMAKER_CHROMA_DIR", "/tmp/chroma_db")
 MANIFEST_FILE = os.getenv("WHYMAKER_MANIFEST_FILE", "/tmp/processed_files.json")
 rag_chain = None
 
+
+def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
+    """Open Chroma at DB_DIR; fall back to a writable /tmp store if unavailable.
+
+    This prevents 500s when the mounted Chroma bucket is empty or read-only
+    before the indexer job has populated it.
+    """
+    try:
+        return Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+    except Exception as exc:
+        print(f"Chroma open failed at {DB_DIR}: {exc}", flush=True)
+        fallback_dir = os.getenv("WHYMAKER_FALLBACK_CHROMA_DIR", "/tmp/chroma_db_fallback")
+        try:
+            os.makedirs(fallback_dir, exist_ok=True)
+        except Exception:
+            pass
+        return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
+
 def process_documents(folder_path="uploads"):
     """
-    Processes all PDF documents in the specified folder, chunks them,
-    and stores their embeddings in a Chroma vector store.
+    Incrementally processes documents from folder_path, chunking and adding
+    them to the Chroma vector store in a memory-safe way. Persists after
+    each file and updates MANIFEST_FILE to avoid re-processing.
     """
     print("Processing documents...", flush=True)
-    
-    documents = []
+
     # Load manifest of already processed files (filename -> mtime)
     if os.path.exists(MANIFEST_FILE):
         with open(MANIFEST_FILE, "r") as f:
@@ -53,54 +71,58 @@ def process_documents(folder_path="uploads"):
         ".jpg": "image",
         ".jpeg": "image",
         ".png": "image",
-        ".svg": "image"
+        ".svg": "image",
     }
 
-    for filename in os.listdir(folder_path):
-        if filename.startswith(('.', '~$')):
-            continue  # skip hidden and temp files
+    # Prepare vector store once
+    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+    vectordb = _open_vectorstore(embeddings)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+
+    new_files = 0
+    for filename in sorted(os.listdir(folder_path)):
+        if filename.startswith((".", "~$")):
+            continue
         ext = os.path.splitext(filename.lower())[1]
         if ext not in supported_exts:
-            continue  # skip unsupported files
-
+            continue
         file_path = os.path.join(folder_path, filename)
-        mtime = os.path.getmtime(file_path)
-
-        # Skip files already processed and unchanged
+        try:
+            mtime = os.path.getmtime(file_path)
+        except FileNotFoundError:
+            continue
         if processed.get(filename) == mtime:
             continue
 
-        print(f"  - Loading {filename}", flush=True)
+        print(f"  - Ingesting {filename}", flush=True)
 
-        # Load document based on extension
+        # Load per-file docs
         if supported_exts[ext] == "pdf":
             loader = PyPDFLoader(file_path)
             docs = loader.load()
         elif supported_exts[ext] == "docx":
-            # DOCX loader that handles paragraphs and tables
             docs = []
             doc = DocxDocument(file_path)
             for para in doc.paragraphs:
                 text = para.text.strip()
                 if text:
                     docs.append(TextDocument(page_content=text, metadata={"source": file_path}))
-            for table in doc.tables:
+            for table in getattr(doc, "tables", []):
                 table_text = "\n".join([" | ".join([cell.text.strip() for cell in row.cells]) for row in table.rows])
                 if table_text:
                     docs.append(TextDocument(page_content=table_text, metadata={"source": file_path, "type": "table"}))
         elif supported_exts[ext] == "pptx":
-            # PPTX loader that extracts text and table content from each slide
             docs = []
             pres = Presentation(file_path)
             for i, slide in enumerate(pres.slides):
                 for shape in slide.shapes:
-                    if shape.has_table:
-                        table = shape.table # type: ignore
+                    if getattr(shape, "has_table", False):
+                        table = shape.table  # type: ignore
                         table_text = "\n".join([" | ".join([cell.text.strip() for cell in row.cells]) for row in table.rows])
                         if table_text:
                             docs.append(TextDocument(page_content=table_text, metadata={"source": file_path, "slide": i, "type": "table"}))
-                    elif shape.has_text_frame:
-                        text = shape.text # type: ignore
+                    elif getattr(shape, "has_text_frame", False):
+                        text = shape.text  # type: ignore
                         if text:
                             docs.append(TextDocument(page_content=text, metadata={"source": file_path, "slide": i}))
         elif supported_exts[ext] == "image":
@@ -108,33 +130,31 @@ def process_documents(folder_path="uploads"):
             docs = loader.load()
         else:
             continue
-        documents.extend(docs)
-        # Update manifest entry
+
+        # Split and add immediately to keep memory low
+        chunks = text_splitter.split_documents(docs)
+        if chunks:
+            vectordb.add_documents(chunks)
+            try:
+                # Chroma persistence can be a no-op depending on backend, but call for safety
+                vectordb.persist()
+            except Exception:
+                pass
         processed[filename] = mtime
+        new_files += 1
 
-    if not documents:
+        # Save manifest incrementally
+        try:
+            os.makedirs(os.path.dirname(MANIFEST_FILE), exist_ok=True)
+        except Exception:
+            pass
+        with open(MANIFEST_FILE, "w") as f:
+            json.dump(processed, f)
+
+    if new_files == 0:
         print("No new documents to process.")
-        return
-
-    print("  - Splitting documents into chunks...", flush=True)
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    texts = text_splitter.split_documents(documents)
-
-    print(f"  - Creating and persisting vector store with {len(texts)} chunks...", flush=True)
-    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-    if os.path.exists(DB_DIR):
-        vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
-        vectordb.add_documents(texts)
     else:
-        Chroma.from_documents(
-            documents=texts,
-            embedding=embeddings,
-            persist_directory=DB_DIR
-        )
-    # Save updated manifest
-    with open(MANIFEST_FILE, "w") as f:
-        json.dump(processed, f)
-    print("  - Done.", flush=True)
+        print(f"  - Ingested {new_files} files.", flush=True)
 
 class CompositeRetriever(BaseRetriever):
     """
@@ -226,7 +246,7 @@ def query_rag(
     Queries the RAG system with a question, history, and model name.
     """
     embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-    vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+    vectordb = _open_vectorstore(embeddings)
     base_retriever = vectordb.as_retriever()
 
     if extra_docs:
