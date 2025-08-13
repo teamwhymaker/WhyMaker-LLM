@@ -23,11 +23,12 @@ load_dotenv()
 # Set up OpenAI client
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
-    raise ValueError("OPENAI_API_KEY not found in .env file")
+    # Allow container to start; requests will fail with clear error later
+    print("Warning: OPENAI_API_KEY is not set.", flush=True)
 
-# Global variables
-DB_DIR = "chroma_db"
-MANIFEST_FILE = "processed_files.json"
+# Global variables (env-driven; default to /tmp in Cloud Run)
+DB_DIR = os.getenv("WHYMAKER_CHROMA_DIR", "/tmp/chroma_db")
+MANIFEST_FILE = os.getenv("WHYMAKER_MANIFEST_FILE", "/tmp/processed_files.json")
 rag_chain = None
 
 def process_documents(folder_path="uploads"):

@@ -4,3 +4,20 @@
 .DS_Store
 __pycache__/
 .env
+# build artifacts
+dist/
+build/
+*.app
+*.dmg
+*.pkg
+*.zip
+
+# virtual env / caches
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# local data
+uploads/
+chroma_db/

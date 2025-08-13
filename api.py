@@ -36,24 +36,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Google Cloud Storage setup ---
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
-storage_client = storage.Client()
-bucket = storage_client.bucket(GCS_BUCKET_NAME)
-
-UPLOAD_DIR = "uploads"
-# Ensure local folder exists
+# --- Paths and optional GCS ---
+UPLOAD_DIR = os.getenv("WHYMAKER_UPLOAD_DIR", "/tmp/uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# Download any existing files from GCS → local UPLOAD_DIR
-for blob in bucket.list_blobs():
-    local_path = os.path.join(UPLOAD_DIR, blob.name)
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    blob.download_to_filename(local_path)
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+_bucket = None
 
 # --- Ingest all existing docs on startup ---
 @app.on_event("startup")
 async def on_startup():
+    # Optionally sync uploads from GCS at startup
+    global _bucket
+    if GCS_BUCKET_NAME:
+        try:
+            storage_client = storage.Client()
+            _bucket = storage_client.bucket(GCS_BUCKET_NAME)
+            for blob in _bucket.list_blobs():
+                local_path = os.path.join(UPLOAD_DIR, blob.name)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                blob.download_to_filename(local_path)
+        except Exception as e:
+            print(f"GCS sync skipped/failed: {e}", flush=True)
     process_documents(folder_path=UPLOAD_DIR)
 
 class Query(BaseModel):
@@ -100,8 +103,12 @@ async def chat(
                 docs = [TextDocument(page_content=p.text, metadata={"source": upload.filename})
                         for p in temp_doc.paragraphs if p.text.strip()]
             else:
-                # fallback: treat as plain text
-                text = tf.read().decode("utf-8", errors="ignore")
+                # fallback: treat as plain text by reading from the saved temp file
+                try:
+                    with open(tf.name, "rb") as f:
+                        text = f.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    text = ""
                 docs = [TextDocument(page_content=text, metadata={"source": upload.filename})]
 
             os.unlink(tf.name)
@@ -152,13 +159,22 @@ async def upload(files: List[UploadFile] = File(...)):
     """
     saved = []
     for upload in files:
-        # Upload to GCS
-        blob = bucket.blob(upload.filename)
-        blob.upload_from_file(await upload.read(), content_type=upload.content_type)
+        content = await upload.read()
+        # Upload to GCS if configured
+        if GCS_BUCKET_NAME:
+            try:
+                storage_client = storage.Client()
+                bucket_obj = storage_client.bucket(GCS_BUCKET_NAME)
+                blob = bucket_obj.blob(upload.filename)
+                blob.upload_from_string(content, content_type=upload.content_type)
+            except Exception as e:
+                print(f"GCS upload failed for {upload.filename}: {e}", flush=True)
         saved.append(upload.filename)
         # Also write locally so process_documents can pick it up
         local_path = os.path.join(UPLOAD_DIR, upload.filename)
-        blob.download_to_filename(local_path)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(content)
 
     # Re-process only the uploads folder so these docs become queryable
     process_documents(folder_path=UPLOAD_DIR)

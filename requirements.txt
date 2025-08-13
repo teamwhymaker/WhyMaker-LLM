@@ -17,3 +17,4 @@ Pillow
 python-pptx
 python-docx 
 nltk 
+gunicorn

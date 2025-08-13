@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local artifacts
+build/
+dist/
+uploads/
+chroma_db/
+.env
+
+# Node
+whymaker-chatbot-interface/.next/
+whymaker-chatbot-interface/node_modules/
+whymaker-chatbot-interface/.vercel/
+
+# Git
+.git
+.gitignore
