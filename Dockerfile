@@ -31,6 +31,6 @@ RUN mkdir -p /tmp/uploads /tmp/chroma_db
 # Start via Gunicorn with Uvicorn worker
 CMD exec gunicorn api:app \
     --bind 0.0.0.0:${PORT} \
-    --workers 2 \
+    --workers 1 \
     --worker-class uvicorn.workers.UvicornWorker \
     --timeout 120

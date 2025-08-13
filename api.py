@@ -42,7 +42,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 _bucket = None
 
-# --- Ingest all existing docs on startup ---
+# --- Optional ingest on startup (disabled by default for Cloud Run service) ---
 @app.on_event("startup")
 async def on_startup():
     # Optionally sync uploads from GCS at startup
@@ -57,7 +57,9 @@ async def on_startup():
                 blob.download_to_filename(local_path)
         except Exception as e:
             print(f"GCS sync skipped/failed: {e}", flush=True)
-    process_documents(folder_path=UPLOAD_DIR)
+
+    if os.getenv("WHYMAKER_INGEST_ON_STARTUP", "false").lower() in ("1", "true", "yes"):
+        process_documents(folder_path=UPLOAD_DIR)
 
 class Query(BaseModel):
     question: str

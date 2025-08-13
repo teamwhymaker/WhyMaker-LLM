@@ -1,4 +1,5 @@
 import os
+import shutil
 import openai
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredImageLoader
@@ -42,12 +43,27 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
         return Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
     except Exception as exc:
         print(f"Chroma open failed at {DB_DIR}: {exc}", flush=True)
-        fallback_dir = os.getenv("WHYMAKER_FALLBACK_CHROMA_DIR", "/tmp/chroma_db_fallback")
+
+        # If the primary path is a read-only GCSFuse mount, copy it to a local RW cache
+        cache_dir = os.getenv("WHYMAKER_CHROMA_CACHE_DIR", "/tmp/chroma_db_cache")
         try:
-            os.makedirs(fallback_dir, exist_ok=True)
-        except Exception:
-            pass
-        return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
+            if os.path.isdir(DB_DIR):
+                # Only copy if cache is empty to avoid repeated full copies
+                if not os.path.exists(cache_dir) or not os.listdir(cache_dir):
+                    os.makedirs(cache_dir, exist_ok=True)
+                    # copytree with dirs_exist_ok preserves structure and overwrites newer files if needed
+                    shutil.copytree(DB_DIR, cache_dir, dirs_exist_ok=True)
+            # Try opening the cached copy
+            return Chroma(persist_directory=cache_dir, embedding_function=embeddings)
+        except Exception as cache_exc:
+            print(f"Chroma cache open failed at {cache_dir}: {cache_exc}", flush=True)
+            # Final fallback to an empty, ephemeral local store so the app stays up
+            fallback_dir = os.getenv("WHYMAKER_FALLBACK_CHROMA_DIR", "/tmp/chroma_db_fallback")
+            try:
+                os.makedirs(fallback_dir, exist_ok=True)
+            except Exception:
+                pass
+            return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
 
 def process_documents(folder_path="uploads"):
     """
