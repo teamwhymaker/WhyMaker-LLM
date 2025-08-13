@@ -23,11 +23,11 @@ load_dotenv()
 # Set up OpenAI client
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
-    raise ValueError("OPENAI_API_KEY not found in .env file")
+    print("WARNING: OPENAI_API_KEY not set. Responses will fail until a key is provided.")
 
-# Global variables
-DB_DIR = "chroma_db"
-MANIFEST_FILE = "processed_files.json"
+# Global variables - support desktop mode paths
+DB_DIR = os.getenv("WHYMAKER_CHROMA_DIR", "chroma_db")
+MANIFEST_FILE = os.getenv("WHYMAKER_MANIFEST_FILE", "processed_files.json")
 rag_chain = None
 
 def process_documents(folder_path="uploads"):

@@ -9,6 +9,8 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Enable static export for desktop packaging
+  output: 'export',
 }
 
 export default nextConfig
