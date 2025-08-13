@@ -53,11 +53,27 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
         cache_dir = os.getenv("WHYMAKER_CHROMA_CACHE_DIR", "/tmp/chroma_db_cache")
         try:
             if os.path.isdir(DB_DIR):
-                # Only copy if cache is empty to avoid repeated full copies
-                if not os.path.exists(cache_dir) or not os.listdir(cache_dir):
-                    os.makedirs(cache_dir, exist_ok=True)
-                    # copytree with dirs_exist_ok preserves structure and overwrites newer files if needed
+                os.makedirs(cache_dir, exist_ok=True)
+                db_manifest = os.path.join(DB_DIR, "processed_files.json")
+                cache_manifest = os.path.join(cache_dir, "processed_files.json")
+
+                should_copy = False
+                # If cache missing or empty, copy
+                if not os.listdir(cache_dir):
+                    should_copy = True
+                else:
+                    # If DB manifest is newer than cache, refresh cache
+                    try:
+                        db_mtime = os.path.getmtime(db_manifest) if os.path.exists(db_manifest) else 0
+                        cache_mtime = os.path.getmtime(cache_manifest) if os.path.exists(cache_manifest) else 0
+                        if db_mtime > cache_mtime:
+                            should_copy = True
+                    except Exception:
+                        should_copy = True
+
+                if should_copy:
                     shutil.copytree(DB_DIR, cache_dir, dirs_exist_ok=True)
+
             # Try opening the cached copy
             return Chroma(persist_directory=cache_dir, embedding_function=embeddings)
         except Exception as cache_exc:
@@ -69,6 +85,43 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
             except Exception:
                 pass
             return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
+
+def _add_docs_with_token_safe_batches(vectordb: Chroma, docs: List[TextDocument], initial_batch_size: int = 64) -> None:
+    """Add documents to Chroma in batches to avoid OpenAI max tokens per request.
+
+    If an OpenAI BadRequestError with 'max_tokens_per_request' occurs, automatically
+    reduce the batch size and retry. This ensures large corpora can be embedded
+    without exceeding provider request limits.
+    """
+    if not docs:
+        return
+    batch_size = max(1, int(os.getenv("WHYMAKER_EMBED_BATCH", initial_batch_size)))
+    i = 0
+    while i < len(docs):
+        end = min(i + batch_size, len(docs))
+        slice_docs = docs[i:end]
+        try:
+            vectordb.add_documents(slice_docs)
+            try:
+                vectordb.persist()
+            except Exception:
+                pass
+            i = end
+        except Exception as e:
+            msg = str(e)
+            # Reduce batch size on token-limit errors and retry
+            if "max_tokens_per_request" in msg or "Requested" in msg and "tokens" in msg:
+                if batch_size == 1:
+                    # Skip the problematic doc to avoid infinite loop
+                    print(f"Skipping one oversized chunk due to token limits at index {i}", flush=True)
+                    i += 1
+                else:
+                    batch_size = max(1, batch_size // 2)
+                    print(f"Token limit hit. Reducing embed batch size to {batch_size} and retrying...", flush=True)
+            else:
+                # Log and skip this slice to keep job moving
+                print(f"Embedding error for batch {i}:{end} -> {e}", flush=True)
+                i = end
 
 def process_documents(folder_path="uploads"):
     """
@@ -206,15 +259,10 @@ def process_documents(folder_path="uploads"):
                 print(f"  - Error loading {rel_key}: {load_exc}", flush=True)
                 continue
 
-            # Split and add immediately to keep memory low
+            # Split and add with token-safe batching
             chunks = text_splitter.split_documents(docs)
             if chunks:
-                vectordb.add_documents(chunks)
-                try:
-                    # Chroma persistence can be a no-op depending on backend, but call for safety
-                    vectordb.persist()
-                except Exception:
-                    pass
+                _add_docs_with_token_safe_batches(vectordb, chunks)
             processed[rel_key] = mtime
             new_files += 1
 
