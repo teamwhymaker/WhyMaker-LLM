@@ -3,8 +3,13 @@ import shutil
 import openai
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredImageLoader
+import csv
 from docx import Document as DocxDocument
 from pptx import Presentation
+try:
+    from openpyxl import load_workbook
+except Exception:
+    load_workbook = None  # type: ignore
 from langchain.schema import Document as TextDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -88,6 +93,10 @@ def process_documents(folder_path="uploads"):
         ".jpeg": "image",
         ".png": "image",
         ".svg": "image",
+        ".txt": "text",
+        ".md": "text",
+        ".csv": "csv",
+        ".xlsx": "xlsx",
     }
 
     # Prepare vector store once
@@ -102,10 +111,11 @@ def process_documents(folder_path="uploads"):
             if filename.startswith((".", "~$")):
                 continue
             ext = os.path.splitext(filename.lower())[1]
-            if ext not in supported_exts:
-                continue
             file_path = os.path.join(current_dir, filename)
             rel_key = os.path.relpath(file_path, folder_path)
+            if ext not in supported_exts:
+                print(f"  - Skipping unsupported: {rel_key} ({ext})", flush=True)
+                continue
             try:
                 mtime = os.path.getmtime(file_path)
             except FileNotFoundError:
@@ -115,50 +125,96 @@ def process_documents(folder_path="uploads"):
 
             print(f"  - Ingesting {rel_key}", flush=True)
 
-        # Load per-file docs
-        if supported_exts[ext] == "pdf":
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
-        elif supported_exts[ext] == "docx":
-            docs = []
-            doc = DocxDocument(file_path)
-            for para in doc.paragraphs:
-                text = para.text.strip()
-                if text:
-                    docs.append(TextDocument(page_content=text, metadata={"source": file_path}))
-            for table in getattr(doc, "tables", []):
-                table_text = "\n".join([" | ".join([cell.text.strip() for cell in row.cells]) for row in table.rows])
-                if table_text:
-                    docs.append(TextDocument(page_content=table_text, metadata={"source": file_path, "type": "table"}))
-        elif supported_exts[ext] == "pptx":
-            docs = []
-            pres = Presentation(file_path)
-            for i, slide in enumerate(pres.slides):
-                for shape in slide.shapes:
-                    if getattr(shape, "has_table", False):
-                        table = shape.table  # type: ignore
+            # Load per-file docs
+            try:
+                if supported_exts[ext] == "pdf":
+                    loader = PyPDFLoader(file_path)
+                    docs = loader.load()
+                elif supported_exts[ext] == "docx":
+                    docs = []
+                    doc = DocxDocument(file_path)
+                    for para in doc.paragraphs:
+                        text = para.text.strip()
+                        if text:
+                            docs.append(TextDocument(page_content=text, metadata={"source": file_path}))
+                    for table in getattr(doc, "tables", []):
                         table_text = "\n".join([" | ".join([cell.text.strip() for cell in row.cells]) for row in table.rows])
                         if table_text:
-                            docs.append(TextDocument(page_content=table_text, metadata={"source": file_path, "slide": i, "type": "table"}))
-                    elif getattr(shape, "has_text_frame", False):
-                        text = shape.text  # type: ignore
-                        if text:
-                            docs.append(TextDocument(page_content=text, metadata={"source": file_path, "slide": i}))
-        elif supported_exts[ext] == "image":
-            loader = UnstructuredImageLoader(file_path)
-            docs = loader.load()
-        else:
-            continue
+                            docs.append(TextDocument(page_content=table_text, metadata={"source": file_path, "type": "table"}))
+                elif supported_exts[ext] == "pptx":
+                    docs = []
+                    pres = Presentation(file_path)
+                    for i, slide in enumerate(pres.slides):
+                        for shape in slide.shapes:
+                            if getattr(shape, "has_table", False):
+                                table = shape.table  # type: ignore
+                                table_text = "\n".join([" | ".join([cell.text.strip() for cell in row.cells]) for row in table.rows])
+                                if table_text:
+                                    docs.append(TextDocument(page_content=table_text, metadata={"source": file_path, "slide": i, "type": "table"}))
+                            elif getattr(shape, "has_text_frame", False):
+                                text = shape.text  # type: ignore
+                                if text:
+                                    docs.append(TextDocument(page_content=text, metadata={"source": file_path, "slide": i}))
+                elif supported_exts[ext] == "image":
+                    loader = UnstructuredImageLoader(file_path)
+                    docs = loader.load()
+                elif supported_exts[ext] == "text":
+                    try:
+                        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                            text = f.read()
+                    except Exception:
+                        text = ""
+                    docs = [TextDocument(page_content=text, metadata={"source": file_path})]
+                elif supported_exts[ext] == "csv":
+                    table_lines = []
+                    try:
+                        with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as f:
+                            sample = f.read(4096)
+                            f.seek(0)
+                            try:
+                                dialect = csv.Sniffer().sniff(sample)
+                            except Exception:
+                                dialect = csv.excel
+                            reader = csv.reader(f, dialect)
+                            for row in reader:
+                                table_lines.append(" | ".join([str(cell) for cell in row]))
+                    except Exception:
+                        pass
+                    docs = [TextDocument(page_content="\n".join(table_lines), metadata={"source": file_path, "type": "table"})]
+                elif supported_exts[ext] == "xlsx":
+                    docs = []
+                    if load_workbook is None:
+                        print("openpyxl not installed; skipping xlsx: " + file_path, flush=True)
+                    else:
+                        try:
+                            wb = load_workbook(file_path, read_only=True, data_only=True)
+                            for sheet in wb.worksheets:
+                                rows_text = []
+                                for row in sheet.iter_rows(values_only=True):
+                                    cells = ["" if v is None else str(v) for v in row]
+                                    rows_text.append(" | ".join(cells))
+                                if rows_text:
+                                    docs.append(TextDocument(
+                                        page_content="\n".join(rows_text),
+                                        metadata={"source": file_path, "sheet": sheet.title, "type": "table"},
+                                    ))
+                        except Exception as e:
+                            print(f"Failed to read xlsx {file_path}: {e}", flush=True)
+                else:
+                    docs = []
+            except Exception as load_exc:
+                print(f"  - Error loading {rel_key}: {load_exc}", flush=True)
+                continue
 
-        # Split and add immediately to keep memory low
-        chunks = text_splitter.split_documents(docs)
-        if chunks:
-            vectordb.add_documents(chunks)
-            try:
-                # Chroma persistence can be a no-op depending on backend, but call for safety
-                vectordb.persist()
-            except Exception:
-                pass
+            # Split and add immediately to keep memory low
+            chunks = text_splitter.split_documents(docs)
+            if chunks:
+                vectordb.add_documents(chunks)
+                try:
+                    # Chroma persistence can be a no-op depending on backend, but call for safety
+                    vectordb.persist()
+                except Exception:
+                    pass
             processed[rel_key] = mtime
             new_files += 1
 
