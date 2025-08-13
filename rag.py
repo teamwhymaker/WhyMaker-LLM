@@ -32,11 +32,73 @@ if not openai.api_key:
     # Allow container to start; requests will fail with clear error later
     print("Warning: OPENAI_API_KEY is not set.", flush=True)
 
-# Global variables (env-driven; default to /tmp in Cloud Run)
-DB_DIR = os.getenv("WHYMAKER_CHROMA_DIR", "/tmp/chroma_db")
-MANIFEST_FILE = os.getenv("WHYMAKER_MANIFEST_FILE", "/tmp/processed_files.json")
+# Helpers to read env at call time (avoids import-time capture in jobs)
+def get_db_dir() -> str:
+    return os.getenv("WHYMAKER_CHROMA_DIR", "/tmp/chroma_db")
+
+
+def get_manifest_file() -> str:
+    return os.getenv("WHYMAKER_MANIFEST_FILE", "/tmp/processed_files.json")
 rag_chain = None
 
+
+def _debug_log_dir(dir_path: str, label: str) -> None:
+    try:
+        import chromadb  # type: ignore
+    except Exception:
+        chromadb = None  # type: ignore
+    if os.getenv("WHYMAKER_DEBUG_CHROMA", "false").lower() not in ("1", "true", "yes"):
+        return
+    try:
+        entries = []
+        if os.path.isdir(dir_path):
+            for name in sorted(os.listdir(dir_path)):
+                p = os.path.join(dir_path, name)
+                kind = "dir" if os.path.isdir(p) else "file"
+                entries.append(f"{name} ({kind})")
+        print(
+            f"[DEBUG] {label}: path={dir_path}, exists={os.path.exists(dir_path)}, chromadb_version={(getattr(chromadb, '__version__', 'unknown') if chromadb else 'unavailable')}, entries={entries}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[DEBUG] Failed to list {dir_path}: {exc}", flush=True)
+
+def _ignore_manifest(dirpath: str, names: list[str]) -> list[str]:
+    # Avoid copying manifest which can be written concurrently by the indexer
+    return ["processed_files.json"] if "processed_files.json" in names else []
+
+
+def _retrying_copytree(src: str, dst: str, attempts: int = 3, ignore_manifest: bool = True) -> None:
+    """Copy src -> dst with retries to mitigate transient gcsfuse read errors.
+
+    Retries on common gcsfuse messages like 'stale NFS file handle' or
+    fuse ReadFileOp failures.
+    """
+    import time
+    errors_to_retry = (
+        "stale NFS file handle",
+        "fuseops.ReadFileOp",
+        "input/output error",
+        "io: read/write on closed pipe",
+    )
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            ignore = _ignore_manifest if ignore_manifest else None
+            shutil.copytree(src, dst, dirs_exist_ok=True, ignore=ignore)
+            return
+        except Exception as exc:  # noqa: PERF203
+            last_exc = exc
+            msg = str(exc).lower()
+            if any(token in msg for token in errors_to_retry) and attempt < attempts:
+                sleep_s = min(2 ** attempt, 8)
+                print(
+                    f"Copy {src} -> {dst} failed (attempt {attempt}/{attempts}): {exc}. Retrying in {sleep_s}s...",
+                    flush=True,
+                )
+                time.sleep(sleep_s)
+                continue
+            raise
 
 def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
     """Open Chroma at DB_DIR; fall back to a writable /tmp store if unavailable.
@@ -44,6 +106,8 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
     This prevents 500s when the mounted Chroma bucket is empty or read-only
     before the indexer job has populated it.
     """
+    DB_DIR = get_db_dir()
+    _debug_log_dir(DB_DIR, "Primary Chroma dir before open")
     try:
         return Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
     except Exception as exc:
@@ -72,9 +136,12 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
                         should_copy = True
 
                 if should_copy:
-                    shutil.copytree(DB_DIR, cache_dir, dirs_exist_ok=True)
+                    attempts = int(os.getenv("WHYMAKER_CACHE_COPY_RETRIES", "3"))
+                    ignore_manifest = os.getenv("WHYMAKER_CACHE_IGNORE_MANIFEST", "true").lower() in ("1", "true", "yes")
+                    _retrying_copytree(DB_DIR, cache_dir, attempts=attempts, ignore_manifest=ignore_manifest)
 
             # Try opening the cached copy
+            _debug_log_dir(cache_dir, "Cached Chroma dir before open")
             return Chroma(persist_directory=cache_dir, embedding_function=embeddings)
         except Exception as cache_exc:
             print(f"Chroma cache open failed at {cache_dir}: {cache_exc}", flush=True)
@@ -84,6 +151,7 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
                 os.makedirs(fallback_dir, exist_ok=True)
             except Exception:
                 pass
+            _debug_log_dir(fallback_dir, "Fallback Chroma dir before open")
             return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
 
 def _add_docs_with_token_safe_batches(vectordb: Chroma, docs: List[TextDocument], initial_batch_size: int = 64) -> None:
@@ -132,6 +200,7 @@ def process_documents(folder_path="uploads"):
     print("Processing documents...", flush=True)
 
     # Load manifest of already processed files (filename -> mtime)
+    MANIFEST_FILE = get_manifest_file()
     if os.path.exists(MANIFEST_FILE):
         with open(MANIFEST_FILE, "r") as f:
             processed = json.load(f)
@@ -309,7 +378,7 @@ def setup_rag_chain(
     print(f"Setting up RAG chain with model: {model_name}...", flush=True)
     if not retriever:
       embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
-      vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+      vectordb = Chroma(persist_directory=get_db_dir(), embedding_function=embeddings)
       retriever = vectordb.as_retriever()
     
     llm = ChatOpenAI(model=model_name, streaming=streaming, callbacks=llm_callbacks)
