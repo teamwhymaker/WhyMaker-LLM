@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 import json
 from langchain_core.retrievers import BaseRetriever
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.callbacks import CallbackManagerForRetrieverRun, BaseCallbackHandler
 from langchain_core.documents import Document
 
 load_dotenv()
@@ -96,21 +96,24 @@ def process_documents(folder_path="uploads"):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
     new_files = 0
-    for filename in sorted(os.listdir(folder_path)):
-        if filename.startswith((".", "~$")):
-            continue
-        ext = os.path.splitext(filename.lower())[1]
-        if ext not in supported_exts:
-            continue
-        file_path = os.path.join(folder_path, filename)
-        try:
-            mtime = os.path.getmtime(file_path)
-        except FileNotFoundError:
-            continue
-        if processed.get(filename) == mtime:
-            continue
+    for current_dir, _, files in os.walk(folder_path):
+        # Sort for deterministic ordering
+        for filename in sorted(files):
+            if filename.startswith((".", "~$")):
+                continue
+            ext = os.path.splitext(filename.lower())[1]
+            if ext not in supported_exts:
+                continue
+            file_path = os.path.join(current_dir, filename)
+            rel_key = os.path.relpath(file_path, folder_path)
+            try:
+                mtime = os.path.getmtime(file_path)
+            except FileNotFoundError:
+                continue
+            if processed.get(rel_key) == mtime:
+                continue
 
-        print(f"  - Ingesting {filename}", flush=True)
+            print(f"  - Ingesting {rel_key}", flush=True)
 
         # Load per-file docs
         if supported_exts[ext] == "pdf":
@@ -156,8 +159,8 @@ def process_documents(folder_path="uploads"):
                 vectordb.persist()
             except Exception:
                 pass
-        processed[filename] = mtime
-        new_files += 1
+            processed[rel_key] = mtime
+            new_files += 1
 
         # Save manifest incrementally
         try:
@@ -190,7 +193,12 @@ class CompositeRetriever(BaseRetriever):
         return base_docs + self.extra_docs
 
 
-def setup_rag_chain(model_name: str = "o4-mini", retriever: BaseRetriever = None):
+def setup_rag_chain(
+    model_name: str = "o4-mini",
+    retriever: BaseRetriever = None,
+    streaming: bool = False,
+    llm_callbacks: Optional[List[BaseCallbackHandler]] = None,
+):
     """
     Sets up a conversational LangChain RAG chain for a given model.
     """
@@ -200,7 +208,7 @@ def setup_rag_chain(model_name: str = "o4-mini", retriever: BaseRetriever = None
       vectordb = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
       retriever = vectordb.as_retriever()
     
-    llm = ChatOpenAI(model=model_name)
+    llm = ChatOpenAI(model=model_name, streaming=streaming, callbacks=llm_callbacks)
 
     # Contextualize question prompt
     contextualize_q_system_prompt = (
@@ -271,7 +279,7 @@ def query_rag(
         retriever = base_retriever
 
     # Create a new chain for each query, configured with the selected model and retriever
-    rag_chain = setup_rag_chain(model_name, retriever=retriever)
+    rag_chain = setup_rag_chain(model_name, retriever=retriever, streaming=False)
 
     if chat_history is None:
         chat_history = []

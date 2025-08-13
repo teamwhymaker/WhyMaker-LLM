@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import openai
 from openai import OpenAI
 from fastapi import File, UploadFile, Form
+from fastapi.responses import StreamingResponse
 from typing import List
 import tempfile
 import json
@@ -15,6 +16,9 @@ from langchain_community.document_loaders import PyPDFLoader, UnstructuredImageL
 from langchain.schema import HumanMessage, AIMessage, Document as TextDocument
 from docx import Document as DocxDocument
 from google.cloud import storage
+import asyncio
+from langchain_openai import OpenAIEmbeddings
+from rag import setup_rag_chain, _open_vectorstore, CompositeRetriever
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -152,6 +156,93 @@ async def chat(
         title = None
 
     return {"answer": answer, "title": title}
+
+
+@app.post("/api/chat-stream")
+async def chat_stream(
+    question: str = Form(...),
+    chat_history: str = Form("[]"),
+    model: str = Form("gpt-3.5-turbo"),
+    files: List[UploadFile] = File([]),
+):
+    # Parse chat history
+    history_list = json.loads(chat_history)
+    converted_history = []
+    for msg in history_list:
+        if msg["role"] == "user":
+            converted_history.append(HumanMessage(content=msg["content"]))
+        else:
+            converted_history.append(AIMessage(content=msg["content"]))
+
+    # Load in-memory ephemeral docs (same as /api/chat)
+    ephemeral_chunks = []
+    if files:
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        for upload in files:
+            suffix = os.path.splitext(upload.filename)[1]
+            tf = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tf.write(await upload.read())
+            tf.flush()
+            tf.close()
+            if suffix.lower() == ".pdf":
+                docs = PyPDFLoader(tf.name).load()
+            elif suffix.lower() in [".jpg", ".jpeg", ".png", ".svg"]:
+                docs = UnstructuredImageLoader(tf.name).load()
+            elif suffix.lower() == ".docx":
+                temp_doc = DocxDocument(tf.name)
+                docs = [TextDocument(page_content=p.text, metadata={"source": upload.filename})
+                        for p in temp_doc.paragraphs if p.text.strip()]
+            else:
+                try:
+                    with open(tf.name, "rb") as f:
+                        text = f.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    text = ""
+                docs = [TextDocument(page_content=text, metadata={"source": upload.filename})]
+            os.unlink(tf.name)
+            ephemeral_chunks.extend(splitter.split_documents(docs))
+
+    class TokenStreamHandler:
+        def __init__(self):
+            self.queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def on_llm_new_token(self, token: str, **kwargs):
+            await self.queue.put(token)
+
+        async def done(self):
+            await self.queue.put(None)
+
+    handler = TokenStreamHandler()
+
+    async def token_generator():
+        try:
+            embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+            vectordb = _open_vectorstore(embeddings)
+            base_retriever = vectordb.as_retriever()
+            retriever = base_retriever if not ephemeral_chunks else CompositeRetriever(base_retriever=base_retriever, extra_docs=ephemeral_chunks)
+            chain = setup_rag_chain(model, retriever=retriever, streaming=True, llm_callbacks=[handler])
+
+            async def run_chain():
+                try:
+                    # Execute the chain in a worker thread since invoke is sync
+                    await asyncio.to_thread(chain.invoke, {"input": question, "chat_history": converted_history})
+                finally:
+                    await handler.done()
+
+            asyncio.create_task(run_chain())
+
+            # SSE stream
+            while True:
+                token = await handler.queue.get()
+                if token is None:
+                    yield "data: [DONE]\n\n"
+                    break
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            yield f"data: ERROR: {str(e)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(token_generator(), media_type="text/event-stream")
 
 @app.post("/api/upload")
 async def upload(files: List[UploadFile] = File(...)):

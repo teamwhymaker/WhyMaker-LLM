@@ -112,27 +112,19 @@ export default function ChatGPTClone() {
     setInput(e.target.value)
   }, [])
 
-  const typeWriterEffect = useCallback((messageId: string, fullText: string) => {
-    const words = fullText.split(" ");
-    let wordIndex = 0;
-    const interval = setInterval(() => {
-      setChatHistories((prevHistories) => {
-        const currentMessages = prevHistories[currentChatId] || [];
-        return {
-          ...prevHistories,
-          [currentChatId]: currentMessages.map((msg) => {
+  const appendToMessage = useCallback((messageId: string, chunk: string) => {
+    setChatHistories((prevHistories) => {
+      const currentMessages = prevHistories[currentChatId] || [];
+      return {
+        ...prevHistories,
+        [currentChatId]: currentMessages.map((msg) => {
           if (msg.id === messageId) {
-            return { ...msg, content: words.slice(0, wordIndex + 1).join(" ") };
+            return { ...msg, content: (msg.content || "") + chunk };
           }
           return msg;
         }),
-        }
-      });
-      wordIndex++;
-      if (wordIndex >= words.length) {
-        clearInterval(interval);
       }
-    }, 50); // 150ms per word; adjust for speed
+    });
   }, [currentChatId]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -189,29 +181,38 @@ export default function ChatGPTClone() {
       form.append("model", modelMapping[selectedModel])
       attachmentsToSend.forEach(f => form.append("files", f))
 
-      // 4) Send to backend
+      // 4) Send to backend (stream)
       const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const res = await fetch(`${API_URL}/api/chat`, {
-        method: "POST",
-        body: form,
-        })
-        const data = await res.json()
-        const answer = data.answer || 'I encountered an error.'
-        const summaryTitle = data.title || ''
-        // Update the chat session title with AI summary
-        if (summaryTitle) {
-          setChatSessions((prev) =>
-            prev.map((chat) =>
-              chat.id === currentChatId
-                ? { ...chat, title: summaryTitle }
-                : chat
-            )
-          )
+      const res = await fetch(`${API_URL}/api/chat-stream`, { method: "POST", body: form })
+      if (!res.ok || !res.body) {
+        appendToMessage(botMessageId, "Error: failed to stream response.\n")
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let titleSet = false
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        const text = decoder.decode(value, { stream: true })
+        // SSE format: lines starting with 'data: '
+        for (const line of text.split("\n\n")) {
+          if (!line.startsWith("data: ")) continue
+          const payload = line.slice(6)
+          if (payload === "[DONE]") {
+            break
+          }
+          appendToMessage(botMessageId, payload)
+          if (!titleSet && messages.length === 0) {
+            // Set a quick provisional title from the first few tokens
+            setChatSessions((prev) => prev.map((c) => c.id === currentChatId ? { ...c, title: (input || payload).slice(0, 30) } : c))
+            titleSet = true
+          }
         }
-        // Animate the assistant's response
-        typeWriterEffect(botMessageId, answer)
+      }
     },
-    [input, currentChatId, chatHistories, selectedFiles, selectedModel, typeWriterEffect],
+    [input, currentChatId, chatHistories, selectedFiles, selectedModel, appendToMessage],
   )
 
   return (
