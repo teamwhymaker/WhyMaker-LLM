@@ -19,6 +19,7 @@ from google.cloud import storage
 import asyncio
 from langchain_openai import OpenAIEmbeddings
 from rag import setup_rag_chain, _open_vectorstore, CompositeRetriever
+from langchain_core.callbacks import BaseCallbackHandler
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -202,17 +203,22 @@ async def chat_stream(
             os.unlink(tf.name)
             ephemeral_chunks.extend(splitter.split_documents(docs))
 
-    class TokenStreamHandler:
-        def __init__(self):
+    class SSETokenQueueHandler(BaseCallbackHandler):
+        def __init__(self, loop: asyncio.AbstractEventLoop):
+            self.loop = loop
             self.queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-        async def on_llm_new_token(self, token: str, **kwargs):
-            await self.queue.put(token)
+        # LangChain expects sync callback methods
+        def on_llm_new_token(self, token: str, **kwargs):
+            # Thread-safe put from worker thread
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, token)
 
-        async def done(self):
-            await self.queue.put(None)
+        def on_llm_end(self, response, **kwargs):
+            # Signal completion
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, None)
 
-    handler = TokenStreamHandler()
+    loop = asyncio.get_running_loop()
+    handler = SSETokenQueueHandler(loop)
 
     async def token_generator():
         try:
@@ -223,11 +229,8 @@ async def chat_stream(
             chain = setup_rag_chain(model, retriever=retriever, streaming=True, llm_callbacks=[handler])
 
             async def run_chain():
-                try:
-                    # Execute the chain in a worker thread since invoke is sync
-                    await asyncio.to_thread(chain.invoke, {"input": question, "chat_history": converted_history})
-                finally:
-                    await handler.done()
+                # Execute the chain in a worker thread since invoke is sync
+                await asyncio.to_thread(chain.invoke, {"input": question, "chat_history": converted_history})
 
             asyncio.create_task(run_chain())
 
