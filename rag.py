@@ -34,7 +34,8 @@ if not openai.api_key:
 
 # Helpers to read env at call time (avoids import-time capture in jobs)
 def get_db_dir() -> str:
-    return os.getenv("WHYMAKER_CHROMA_DIR", "/tmp/chroma_db")
+    # Default to /mnt/chroma in containerized environments
+    return os.getenv("WHYMAKER_CHROMA_DIR", "/mnt/chroma")
 
 
 def get_manifest_file() -> str:
@@ -107,14 +108,10 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
     before the indexer job has populated it.
     """
     DB_DIR = get_db_dir()
-    _debug_log_dir(DB_DIR, "Primary Chroma dir before open")
-    try:
-        return Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
-    except Exception as exc:
-        print(f"Chroma open failed at {DB_DIR}: {exc}", flush=True)
+    READONLY = os.getenv("WHYMAKER_CHROMA_READONLY", "true").lower() in ("1", "true", "yes")
+    cache_dir = os.getenv("WHYMAKER_CHROMA_CACHE_DIR", "/tmp/chroma_db_cache")
 
-        # If the primary path is a read-only GCSFuse mount, copy it to a local RW cache
-        cache_dir = os.getenv("WHYMAKER_CHROMA_CACHE_DIR", "/tmp/chroma_db_cache")
+    def open_from_cache() -> Chroma:
         try:
             if os.path.isdir(DB_DIR):
                 os.makedirs(cache_dir, exist_ok=True)
@@ -122,11 +119,9 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
                 cache_manifest = os.path.join(cache_dir, "processed_files.json")
 
                 should_copy = False
-                # If cache missing or empty, copy
                 if not os.listdir(cache_dir):
                     should_copy = True
                 else:
-                    # If DB manifest is newer than cache, refresh cache
                     try:
                         db_mtime = os.path.getmtime(db_manifest) if os.path.exists(db_manifest) else 0
                         cache_mtime = os.path.getmtime(cache_manifest) if os.path.exists(cache_manifest) else 0
@@ -137,15 +132,13 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
 
                 if should_copy:
                     attempts = int(os.getenv("WHYMAKER_CACHE_COPY_RETRIES", "3"))
-                    ignore_manifest = os.getenv("WHYMAKER_CACHE_IGNORE_MANIFEST", "true").lower() in ("1", "true", "yes")
-                    _retrying_copytree(DB_DIR, cache_dir, attempts=attempts, ignore_manifest=ignore_manifest)
+                    ignore_manifest_flag = os.getenv("WHYMAKER_CACHE_IGNORE_MANIFEST", "true").lower() in ("1", "true", "yes")
+                    _retrying_copytree(DB_DIR, cache_dir, attempts=attempts, ignore_manifest=ignore_manifest_flag)
 
-            # Try opening the cached copy
             _debug_log_dir(cache_dir, "Cached Chroma dir before open")
             return Chroma(persist_directory=cache_dir, embedding_function=embeddings)
         except Exception as cache_exc:
             print(f"Chroma cache open failed at {cache_dir}: {cache_exc}", flush=True)
-            # Final fallback to an empty, ephemeral local store so the app stays up
             fallback_dir = os.getenv("WHYMAKER_FALLBACK_CHROMA_DIR", "/tmp/chroma_db_fallback")
             try:
                 os.makedirs(fallback_dir, exist_ok=True)
@@ -153,6 +146,10 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
                 pass
             _debug_log_dir(fallback_dir, "Fallback Chroma dir before open")
             return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
+
+    # Always prefer opening from the cache in Cloud Run to avoid gcsfuse quirks
+    _debug_log_dir(DB_DIR, "Primary Chroma dir (using cache)")
+    return open_from_cache()
 
 def _add_docs_with_token_safe_batches(vectordb: Chroma, docs: List[TextDocument], initial_batch_size: int = 64) -> None:
     """Add documents to Chroma in batches to avoid OpenAI max tokens per request.
@@ -379,9 +376,13 @@ def setup_rag_chain(
     if not retriever:
       embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
       vectordb = Chroma(persist_directory=get_db_dir(), embedding_function=embeddings)
-      retriever = vectordb.as_retriever()
-    
-    llm = ChatOpenAI(model=model_name, streaming=streaming, callbacks=llm_callbacks)
+      # Retrieve a few more candidates to improve recall
+      retriever = vectordb.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+
+    # Use a non-streaming model for the question rewrite step so we don't leak tokens to the client
+    rewrite_llm = ChatOpenAI(model=model_name, temperature=0, streaming=False)
+    # Use streaming for the final QA step only
+    qa_llm = ChatOpenAI(model=model_name, temperature=0.2, streaming=streaming, callbacks=llm_callbacks)
 
     # Contextualize question prompt
     contextualize_q_system_prompt = (
@@ -399,7 +400,7 @@ def setup_rag_chain(
         ]
     )
     history_aware_retriever = create_history_aware_retriever(
-        llm, retriever, contextualize_q_prompt
+        rewrite_llm, retriever, contextualize_q_prompt
     )
 
     # Answering prompt
@@ -423,7 +424,7 @@ def setup_rag_chain(
         ]
     )
 
-    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    question_answer_chain = create_stuff_documents_chain(qa_llm, qa_prompt)
 
     # Return the chain instead of setting a global variable
     return create_retrieval_chain(history_aware_retriever, question_answer_chain)
@@ -440,7 +441,14 @@ def query_rag(
     """
     embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
     vectordb = _open_vectorstore(embeddings)
-    base_retriever = vectordb.as_retriever()
+    base_retriever = vectordb.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+    if os.getenv("WHYMAKER_DEBUG_CHROMA", "false").lower() in ("1", "true", "yes"):
+        try:
+            # type: ignore[attr-defined]
+            count = vectordb._collection.count()  # pyright: ignore
+            print(f"[DEBUG] Vector store document count: {count}", flush=True)
+        except Exception as e:
+            print(f"[DEBUG] Could not query vector store count: {e}", flush=True)
 
     if extra_docs:
         retriever = CompositeRetriever(base_retriever=base_retriever, extra_docs=extra_docs)
