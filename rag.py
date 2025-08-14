@@ -464,6 +464,12 @@ def query_rag(
     result = rag_chain.invoke({"input": question, "chat_history": chat_history})
     
     answer = result.get("answer", "I don't have enough information to answer.")
+    if os.getenv("WHYMAKER_DEBUG_CHROMA", "false").lower() in ("1", "true", "yes"):
+        try:
+            ctx = result.get("context", "")
+            print(f"[DEBUG] Retrieved context length: {len(ctx)}", flush=True)
+        except Exception as e:
+            print(f"[DEBUG] Could not inspect retrieved context: {e}", flush=True)
 
     # --- Debugging: Print retrieved source documents ---
     # This part of the original code was not included in the new_code,
