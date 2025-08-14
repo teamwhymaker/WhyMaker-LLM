@@ -19,3 +19,5 @@ python-docx
 nltk 
 gunicorn
 openpyxl
+pdfminer.six
+google-cloud-vision

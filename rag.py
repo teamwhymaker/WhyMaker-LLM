@@ -204,19 +204,24 @@ def process_documents(folder_path="uploads"):
     else:
         processed = {}
 
+    # Configure which extensions to ingest
+    ingest_images = os.getenv("WHYMAKER_INGEST_IMAGES", "false").lower() in ("1", "true", "yes")
     supported_exts = {
         ".pdf": "pdf",
         ".docx": "docx",
         ".pptx": "pptx",
-        ".jpg": "image",
-        ".jpeg": "image",
-        ".png": "image",
-        ".svg": "image",
         ".txt": "text",
         ".md": "text",
         ".csv": "csv",
         ".xlsx": "xlsx",
     }
+    if ingest_images:
+        supported_exts.update({
+            ".jpg": "image",
+            ".jpeg": "image",
+            ".png": "image",
+            ".svg": "image",
+        })
 
     # Prepare vector store once
     embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
@@ -275,8 +280,20 @@ def process_documents(folder_path="uploads"):
                                 if text:
                                     docs.append(TextDocument(page_content=text, metadata={"source": file_path, "slide": i}))
                 elif supported_exts[ext] == "image":
-                    loader = UnstructuredImageLoader(file_path)
-                    docs = loader.load()
+                    # Try OCR first, fall back to unstructured image loader
+                    docs = []
+                    try:
+                        import pytesseract  # type: ignore
+                        from PIL import Image  # type: ignore
+                        text = pytesseract.image_to_string(Image.open(file_path))
+                        if text.strip():
+                            docs = [TextDocument(page_content=text, metadata={"source": file_path, "type": "ocr"})]
+                    except Exception:
+                        try:
+                            loader = UnstructuredImageLoader(file_path)
+                            docs = loader.load()
+                        except Exception:
+                            docs = []
                 elif supported_exts[ext] == "text":
                     try:
                         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
