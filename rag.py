@@ -147,9 +147,24 @@ def _open_vectorstore(embeddings: OpenAIEmbeddings) -> Chroma:
             _debug_log_dir(fallback_dir, "Fallback Chroma dir before open")
             return Chroma(persist_directory=fallback_dir, embedding_function=embeddings)
 
-    # Always prefer opening from the cache in Cloud Run to avoid gcsfuse quirks
-    _debug_log_dir(DB_DIR, "Primary Chroma dir (using cache)")
-    return open_from_cache()
+    # Writer vs reader behavior
+    # - Service (reader): WHYMAKER_CHROMA_READONLY=true → use cache for stability
+    # - Index job (writer): WHYMAKER_CHROMA_READONLY=false → write directly to DB_DIR
+    if READONLY:
+        _debug_log_dir(DB_DIR, "Primary Chroma dir (readonly → using cache)")
+        return open_from_cache()
+
+    # Writer mode: try writing directly to the mounted directory
+    _debug_log_dir(DB_DIR, "Primary Chroma dir (writer mode)")
+    try:
+        os.makedirs(DB_DIR, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        return Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+    except Exception as exc:
+        print(f"Chroma open failed at {DB_DIR} (writer mode): {exc}. Falling back to cache.", flush=True)
+        return open_from_cache()
 
 def _add_docs_with_token_safe_batches(vectordb: Chroma, docs: List[TextDocument], initial_batch_size: int = 64) -> None:
     """Add documents to Chroma in batches to avoid OpenAI max tokens per request.

@@ -12,6 +12,8 @@ def main() -> None:
 
     os.environ["WHYMAKER_CHROMA_DIR"] = chroma_dir
     os.environ["WHYMAKER_MANIFEST_FILE"] = manifest_path
+    # Index job writes directly to the mounted DB
+    os.environ["WHYMAKER_CHROMA_READONLY"] = "false"
 
     print(
         f"Index job: ingesting from {uploads_dir} → {chroma_dir} (manifest {manifest_path})",
