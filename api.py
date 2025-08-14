@@ -130,6 +130,7 @@ async def chat(
     )
 
     # 4) Generate a chat title on the first user message
+    title = None
     if len(history_list) == 0:
         try:
             title_prompt = (
@@ -153,8 +154,6 @@ async def chat(
         except Exception as e:
             print(f"Title generation failed: {e}")
             title = question[:30] + "..."
-    else:
-        title = None
 
     return {"answer": answer, "title": title}
 
@@ -227,6 +226,30 @@ async def chat_stream(
             base_retriever = vectordb.as_retriever()
             retriever = base_retriever if not ephemeral_chunks else CompositeRetriever(base_retriever=base_retriever, extra_docs=ephemeral_chunks)
             chain = setup_rag_chain(model, retriever=retriever, streaming=True, llm_callbacks=[handler])
+
+            # Emit a title event for the very first user message so the UI can set chat title
+            if len(history_list) == 0:
+                try:
+                    title_prompt = (
+                        "Summarize the following user question into a 3-5 word title. "
+                        f"Be concise and representative of the main topic.\n\n"
+                        f"Question: '{question}'"
+                    )
+                    response = client.chat.completions.create(
+                        model="gpt-4.1-nano",
+                        messages=[
+                            {"role": "system", "content": "You are a title generator for WhyMaker."},
+                            {"role": "user", "content": title_prompt},
+                        ],
+                        max_tokens=15,
+                        temperature=0.2,
+                    )
+                    if response and response.choices:
+                        title = response.choices[0].message.content.strip().replace('"', "")
+                        yield f"event: title\ndata: {json.dumps(title)}\n\n"
+                except Exception as title_exc:
+                    # Title generation is best-effort; proceed with streaming tokens
+                    yield f"event: title\ndata: {json.dumps(question[:30] + '...')}\n\n"
 
             async def run_chain():
                 # Execute the chain in a worker thread since invoke is sync
