@@ -12,6 +12,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { ChevronDownIcon } from "lucide-react"
+import { AuthStatus } from "@/components/auth-status"
+import { useAuth } from "@/hooks/use-auth"
 
 interface ChatSession {
   id: string
@@ -96,6 +98,9 @@ export default function ChatGPTClone() {
   const [currentChatId, setCurrentChatId] = useState<string>("")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [selectedModel, setSelectedModel] = useState<string>("Fast")
+  
+  // Get auth status
+  const { authenticated, loading: authLoading } = useAuth()
 
   const messages = chatHistories[currentChatId] || []
 
@@ -203,6 +208,32 @@ export default function ChatGPTClone() {
       e.preventDefault()
       // Don't send an empty question unless you've attached files
       if (!input.trim() && selectedFiles.length === 0) return
+
+      // Check if user is authenticated
+      if (!authenticated && !authLoading) {
+        // Add a system message prompting to sign in
+        const currentMessages = chatHistories[currentChatId] || [];
+        const userMessage = {
+          id: `user-${Date.now()}`,
+          role: "user",
+          content: input,
+          files: selectedFiles,
+        }
+        const systemMessageId = `system-${Date.now()}`
+        const systemMessage = {
+          id: systemMessageId,
+          role: "assistant",
+          content: "Sorry, you need to sign in to chat with WhyMaker Bot. Please click the **Sign In** button in the top right corner to authenticate with your Google account and access the knowledge base.",
+        }
+
+        setChatHistories(prev => ({
+          ...prev,
+          [currentChatId]: [...currentMessages, userMessage, systemMessage]
+        }));
+        setInput("")
+        setSelectedFiles([])
+        return
+      }
 
       const currentMessages = chatHistories[currentChatId] || [];
 
@@ -313,7 +344,7 @@ export default function ChatGPTClone() {
         }));
       }
     },
-    [input, currentChatId, chatHistories, selectedFiles, selectedModel],
+    [input, currentChatId, chatHistories, selectedFiles, selectedModel, authenticated, authLoading],
   )
 
   return (
@@ -396,10 +427,10 @@ export default function ChatGPTClone() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col relative">
-        {/* Model Selector - Top Left (always visible) */}
-        <div className="absolute top-4 left-4 z-10">
-          {" "}
-          {/* Added z-10 to ensure it's on top */}
+        {/* Top Bar with Model Selector (left) and Auth Status (right) */}
+        <div className="absolute top-4 left-4 right-4 z-10 flex justify-between items-center">
+          {/* Model Selector - Top Left */}
+          <div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -461,6 +492,10 @@ export default function ChatGPTClone() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
+          
+          {/* Auth Status - Top Right */}
+          <AuthStatus />
         </div>
 
         {messages.length === 0 ? (
@@ -506,7 +541,7 @@ export default function ChatGPTClone() {
                     <Input
                       value={input}
                       onChange={handleInputChange}
-                      placeholder="Message WhyMaker Bot..."
+                      placeholder={!authenticated && !authLoading ? "Sign in to chat with WhyMaker Bot..." : "Message WhyMaker Bot..."}
                       className="w-full pr-12 py-3 rounded-xl focus:ring-2 focus:border-transparent focus:outline-none" // Added focus:outline-none
                       style={{
                         backgroundColor: "var(--bg-secondary)",
@@ -690,7 +725,7 @@ export default function ChatGPTClone() {
                       <Input
                         value={input}
                         onChange={handleInputChange}
-                        placeholder="Message WhyMaker Bot..."
+                        placeholder={!authenticated && !authLoading ? "Sign in to chat with WhyMaker Bot..." : "Message WhyMaker Bot..."}
                         className="w-full pr-12 py-3 rounded-xl focus:ring-2 focus:border-transparent focus:outline-none" // Added focus:outline-none
                         style={{
                           backgroundColor: "var(--bg-secondary)",

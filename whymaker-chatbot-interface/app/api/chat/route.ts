@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { cookies } from "next/headers";
 import OpenAI from "openai";
 import { SearchServiceClient } from "@google-cloud/discoveryengine";
 import { GoogleAuth } from "google-auth-library";
@@ -13,7 +14,23 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "Question is required" }, { status: 400 });
     }
 
-    // Initialize Vertex AI Search client
+    // Check for user OAuth token (for Drive datastores)
+    let usingUserOAuth = false;
+    let oauthAccessToken: string | undefined;
+    const jar = await cookies();
+    const oauthCookie = jar.get("wm_google_oauth")?.value;
+    if (oauthCookie) {
+      try {
+        const tokenData = JSON.parse(Buffer.from(oauthCookie, "base64").toString("utf8"));
+        const expiresAt = (tokenData.obtained_at || 0) + (tokenData.expires_in || 0) * 1000;
+        if (tokenData.access_token && Date.now() < expiresAt) {
+          usingUserOAuth = true;
+          oauthAccessToken = tokenData.access_token;
+        }
+      } catch {}
+    }
+
+    // Always use service account for SearchServiceClient (avoid auth compatibility issues)
     const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
     if (!serviceAccountJson) {
       throw new Error("GCP_SERVICE_ACCOUNT_JSON environment variable is not set");
@@ -26,7 +43,11 @@ export async function POST(req: NextRequest) {
 
     // Debug: verify client config
     console.log("[VertexSearch] Using project:", process.env.VERTEX_PROJECT_ID);
-    console.log("[VertexSearch] Service account email:", credentials.client_email);
+    if (!usingUserOAuth) {
+      console.log("[VertexSearch] Service account email:", credentials.client_email);
+    } else {
+      console.log("[VertexSearch] Using user OAuth token");
+    }
 
     // Build the serving config path safely
     const projectId = process.env.VERTEX_PROJECT_ID!;
@@ -171,61 +192,53 @@ export async function POST(req: NextRequest) {
 
     const resultCount = (response: any): number => toResultsArray(response).length;
 
-    // Search for relevant documents
-    console.log("[VertexSearch] Searching with query:", question);
-    let [searchResponse] = await searchClient
-      .search({
-      servingConfig,
-      query: question,
-      pageSize: 8,
-        // Try without contentSearchSpec first to see if we get basic results
-        // contentSearchSpec: {
-        //   snippetSpec: { returnSnippet: true, maxSnippetCount: 5 },
-        //   summarySpec: { summaryResultCount: 5, includeCitations: false },
-        // },
-      })
-      .catch(async (err: any) => {
-        // If engine path fails (NOT_FOUND) and we have a datastore id, try datastore path for compatibility
-        if ((String(err?.code) === "5" || /NOT_FOUND/i.test(String(err))) && attemptedEngineFirst && dataStoreIdEnv) {
-          const dsServingConfig = `projects/${projectId}/locations/${location}/collections/default_collection/dataStores/${dataStoreIdEnv}/servingConfigs/default_search`;
-        return await searchClient.search({
+    // Skip SDK search for user OAuth (has auth issues), rely on REST API below
+    let searchResponse: any = { results: [] };
+    
+    if (!usingUserOAuth) {
+      // Search for relevant documents using SDK (service account only)
+      console.log("[VertexSearch] Searching with query:", question);
+      [searchResponse] = await searchClient
+        .search({
+        servingConfig,
+        query: question,
+        pageSize: 8,
+        })
+        .catch(async (err: any) => {
+          // If engine path fails (NOT_FOUND) and we have a datastore id, try datastore path for compatibility
+          if ((String(err?.code) === "5" || /NOT_FOUND/i.test(String(err))) && attemptedEngineFirst && dataStoreIdEnv) {
+            const dsServingConfig = `projects/${projectId}/locations/${location}/collections/default_collection/dataStores/${dataStoreIdEnv}/servingConfigs/default_search`;
+          return await searchClient.search({
+              servingConfig: dsServingConfig,
+              query: question,
+              pageSize: 8,
+            });
+          }
+          throw err;
+        });
+
+      // If the first search returned no results, heuristically try the Data Store path as a second attempt
+      if (resultCount(searchResponse) === 0 && dataStoreIdEnv) {
+        const dsServingConfig = `projects/${projectId}/locations/${location}/collections/default_collection/dataStores/${dataStoreIdEnv}/servingConfigs/default_search`;
+        try {
+          console.log("[VertexSearch] engine returned 0; trying dataStore servingConfig=", dsServingConfig);
+          const [fallbackResponse] = await searchClient.search({
             servingConfig: dsServingConfig,
             query: question,
             pageSize: 8,
-            // contentSearchSpec: {
-            //   snippetSpec: { returnSnippet: true, maxSnippetCount: 5 },
-            //   summarySpec: { summaryResultCount: 5, includeCitations: false },
-            // },
           });
+          // Only replace if the DS search actually returns results
+          if (resultCount(fallbackResponse) > 0) {
+            console.log("[VertexSearch] dataStore search produced results; switching to DS response.");
+            searchResponse = fallbackResponse;
+            servingConfig = dsServingConfig;
+          } else {
+            console.log("[VertexSearch] dataStore search also returned 0 results.");
+          }
+        } catch (e) {
+          // ignore and keep original response
+          console.log("[VertexSearch] dataStore search threw error:", e);
         }
-        throw err;
-      });
-
-    // If the first search returned no results, heuristically try the Data Store path as a second attempt
-    if (resultCount(searchResponse) === 0 && dataStoreIdEnv) {
-      const dsServingConfig = `projects/${projectId}/locations/${location}/collections/default_collection/dataStores/${dataStoreIdEnv}/servingConfigs/default_search`;
-      try {
-        console.log("[VertexSearch] engine returned 0; trying dataStore servingConfig=", dsServingConfig);
-        const [fallbackResponse] = await searchClient.search({
-          servingConfig: dsServingConfig,
-          query: question,
-          pageSize: 8,
-          // contentSearchSpec: {
-          //   snippetSpec: { returnSnippet: true, maxSnippetCount: 5 },
-          //   summarySpec: { summaryResultCount: 5, includeCitations: false },
-          // },
-        });
-        // Only replace if the DS search actually returns results
-        if (resultCount(fallbackResponse) > 0) {
-          console.log("[VertexSearch] dataStore search produced results; switching to DS response.");
-          searchResponse = fallbackResponse;
-          servingConfig = dsServingConfig;
-        } else {
-          console.log("[VertexSearch] dataStore search also returned 0 results.");
-        }
-      } catch (e) {
-        // ignore and keep original response
-        console.log("[VertexSearch] dataStore search threw error:", e);
       }
     }
 
@@ -260,15 +273,40 @@ export async function POST(req: NextRequest) {
     const searchQueries = decomposeQuestion(question);
     console.log("[VertexSearch] Decomposed into", searchQueries.length, "queries:", searchQueries);
 
-    // Prefer also calling v1alpha REST to get extractive answers/snippets (matches UI Integration)
+    // Use v1alpha REST API for all searches (works with both auth modes)
     let alphaResults: any[] | undefined;
     let alphaSummaryText: string | undefined;
     {
-      const auth = new GoogleAuth({
-        credentials,
-        scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-      });
-      const authClient = await auth.getClient();
+      // Create appropriate auth client based on mode
+      let authClient: any;
+      if (usingUserOAuth && oauthAccessToken) {
+        // Use user OAuth token for REST calls
+        authClient = {
+          request: async (opts: any) => {
+            const headers = { 
+              ...opts.headers, 
+              Authorization: `Bearer ${oauthAccessToken}`,
+              'Content-Type': 'application/json'
+            };
+            const response = await fetch(opts.url, {
+              method: opts.method || 'GET',
+              headers,
+              body: opts.data ? JSON.stringify(opts.data) : undefined,
+            });
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            }
+            return { data: await response.json() };
+          }
+        };
+      } else {
+        // Use service account
+        const auth = new GoogleAuth({
+          credentials,
+          scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+        });
+        authClient = await auth.getClient();
+      }
       const sc = (process.env.VERTEX_SERVING_CONFIG || servingConfig).replace(/^\//, "");
       const url = `https://discoveryengine.googleapis.com/v1alpha/${sc}:search`;
 
