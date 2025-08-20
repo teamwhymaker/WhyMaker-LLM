@@ -14,7 +14,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Initialize Vertex AI Search client
-    const credentials = JSON.parse(process.env.GCP_SERVICE_ACCOUNT_JSON!);
+    const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
+    if (!serviceAccountJson) {
+      throw new Error("GCP_SERVICE_ACCOUNT_JSON environment variable is not set");
+    }
+    const credentials = JSON.parse(serviceAccountJson);
     const searchClient = new SearchServiceClient({
       credentials,
       projectId: process.env.VERTEX_PROJECT_ID!,
