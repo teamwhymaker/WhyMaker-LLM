@@ -8,9 +8,9 @@ export const metadata: Metadata = {
   description: 'AI-powered chatbot for WhyMaker - Get instant answers to your questions',
   generator: 'WhyMaker',
   icons: {
-    icon: '/WhyMaker Logo Mark-05.svg',
-    shortcut: '/WhyMaker Logo Mark-05.svg',
-    apple: '/WhyMaker Logo Mark-05.svg',
+    icon: '/images/WhyMaker Logo Mark-05.svg',
+    shortcut: '/images/WhyMaker Logo Mark-05.svg',
+    apple: '/images/WhyMaker Logo Mark-05.svg',
   },
 }
 
