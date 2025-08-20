@@ -37,6 +37,11 @@ Goal: host the UI and a minimal serverless API on Vercel, use Vertex AI Search f
   - `VERTEX_DATA_STORE_ID`
   - Optional: the full Serving Config name if you prefer: `projects/…/locations/…/collections/default_collection/dataStores/…/servingConfigs/default_search`.
 
+Data Store ID: whymaker-gcs-connector (example from screenshot UI)
+Project ID: whymaker-llm-on-goog
+Location: global
+Note: In the Vertex AI Applications UI, an App contains an Engine which is backed by one or more Data Stores. The Engine ID is different from the Data Store ID. Use `VERTEX_ENGINE_ID` if you created an App/Engine; otherwise use `VERTEX_DATA_STORE_ID`.
+
 ---
 
 ### 3) Repository adjustments

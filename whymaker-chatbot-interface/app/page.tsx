@@ -22,8 +22,7 @@ interface ChatSession {
 
 const modelMapping: { [key: string]: string } = {
   "Fast": "gpt-4.1-nano",
-  "Smart": "o4-mini",
-  "Deep Reasoning": "o3",
+  "Smart": "gpt-5-mini",
 };
 
 export default function ChatGPTClone() {
@@ -140,7 +139,7 @@ export default function ChatGPTClone() {
   const handleSubmit = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault()
-      // Don’t send an empty question unless you’ve attached files
+      // Don't send an empty question unless you've attached files
       if (!input.trim() && selectedFiles.length === 0) return
 
       const currentMessages = chatHistories[currentChatId] || [];
@@ -165,54 +164,69 @@ export default function ChatGPTClone() {
         [currentChatId]: [...currentMessages, userMessage, initialBotMessage]
       }));
       setInput("")
-
-      // 1) Collect *all* attachments from prior messages + the new one
-      const historyFiles = currentMessages.flatMap((m: any) => m.files || []);
-      const attachmentsToSend = [...historyFiles, ...selectedFiles];
       setSelectedFiles([])
 
-      // 2) Clear the file picker
-
-      // 3) Build the multipart/form-data
-      const form = new FormData()
-      form.append("question", input)
-      // Include the new message in the history we send
-      form.append("chat_history", JSON.stringify(currentMessages.map(({ role, content }) => ({ role, content }))))
-      form.append("model", modelMapping[selectedModel])
-      attachmentsToSend.forEach(f => form.append("files", f))
-
-      // 4) Send to backend (stream)
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const res = await fetch(`${API_URL}/api/chat-stream`, { method: "POST", body: form })
-      if (!res.ok || !res.body) {
-        appendToMessage(botMessageId, "Error: failed to stream response.\n")
-        return
+      // Set title for new chats
+      if (currentMessages.length === 0) {
+        setChatSessions((prev) => prev.map((c) => c.id === currentChatId ? { ...c, title: input.slice(0, 30) } : c))
       }
 
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let titleSet = false
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        const text = decoder.decode(value, { stream: true })
-        // SSE format: lines starting with 'data: '
-        for (const line of text.split("\n\n")) {
-          if (!line.startsWith("data: ")) continue
-          const payload = line.slice(6)
-          if (payload === "[DONE]") {
-            break
-          }
-          appendToMessage(botMessageId, payload)
-          if (!titleSet && messages.length === 0) {
-            // Set a quick provisional title from the first few tokens
-            setChatSessions((prev) => prev.map((c) => c.id === currentChatId ? { ...c, title: (input || payload).slice(0, 30) } : c))
-            titleSet = true
-          }
+      try {
+        // Call the new Vercel API route
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            question: input,
+            chat_history: currentMessages.map(({ role, content }) => ({ role, content })),
+            model: modelMapping[selectedModel]
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
         }
+
+        const contentType = response.headers.get('content-type') || '';
+
+        // If server streams text, incrementally append
+        if (!contentType.includes('application/json') && response.body) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            appendToMessage(botMessageId, chunk);
+          }
+        } else {
+          // Fallback: non-streaming JSON
+          const data = await response.json();
+          setChatHistories(prev => ({
+            ...prev,
+            [currentChatId]: prev[currentChatId].map(msg => 
+              msg.id === botMessageId 
+                ? { ...msg, content: data.answer }
+                : msg
+            )
+          }));
+        }
+
+      } catch (error) {
+        console.error('Error:', error);
+        setChatHistories(prev => ({
+          ...prev,
+          [currentChatId]: prev[currentChatId].map(msg => 
+            msg.id === botMessageId 
+              ? { ...msg, content: "Sorry, I encountered an error. Please try again." }
+              : msg
+          )
+        }));
       }
     },
-    [input, currentChatId, chatHistories, selectedFiles, selectedModel, appendToMessage],
+    [input, currentChatId, chatHistories, selectedFiles, selectedModel],
   )
 
   return (
@@ -352,29 +366,9 @@ export default function ChatGPTClone() {
               >
                 <span>Smart</span>
                 <span className="text-xs -mt-0.5 leading-[.5rem]" style={{ color: "var(--text-tertiary)" }}>
-                  Model - o4-mini
+                  Model - GPT‑5 Mini
                 </span>
                 {selectedModel === "Smart" && (
-                  <CheckIcon className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4" />
-                )}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => setSelectedModel("Deep Reasoning")}
-                className="cursor-pointer focus:outline-none flex flex-col items-start py-2 relative"
-                style={{ color: "var(--text-primary)" }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--bg-tertiary)"; e.currentTarget.style.outline = "none"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-              >
-                <div className="flex items-center space-x-2">
-                <span>Deep Reasoning</span>
-                  <span className="border border-red-600/70 text-red-600/70 text-[10px] uppercase px-1 py-[0.5px] rounded">
-                    EXPENSIVE
-                  </span>
-                </div>
-                <span className="text-xs -mt-0.5 leading-[.5rem]" style={{ color: "var(--text-tertiary)" }}>
-                  Model - o3
-                </span>
-                {selectedModel === "Deep Reasoning" && (
                   <CheckIcon className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4" />
                 )}
               </DropdownMenuItem>
