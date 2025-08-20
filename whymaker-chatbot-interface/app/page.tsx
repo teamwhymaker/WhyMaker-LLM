@@ -25,6 +25,68 @@ const modelMapping: { [key: string]: string } = {
   "Smart": "gpt-5-mini",
 };
 
+// Create a short, readable title from the user's first prompt
+function generateChatTitle(prompt: string): string {
+  const original = (prompt || "").trim();
+  if (!original) return "New Chat";
+
+  let text = original.replace(/[`"'\(\)\[\]{}<>_*#~:;!?.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Remove common leading filler phrases
+  const leadingPatterns: RegExp[] = [
+    /^(please\s+)?(help\s+me\s+)?(write|create|draft|generate|make|produce|prepare|design|build|give|provide|explain|summarize|answer)\s+(me\s+with\s+|me\s+|a\s+|an\s+)?/i,
+    /^(who|what|where|when|why|how)\s+(is|are|was|were|do|does|did|to|the)\s+/i,
+    /^(tell\s+me\s+about|give\s+me\s+an?\s+|show\s+me\s+|i\s+need\s+an?\s+)/i,
+  ];
+  for (const rx of leadingPatterns) {
+    text = text.replace(rx, "").trim();
+  }
+
+  // Limit to a few words, keeping key terms
+  const stop = new Set([
+    "the","a","an","and","or","of","for","to","in","on","at","about","with","please"
+  ]);
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const picked: string[] = [];
+  for (const token of tokens) {
+    if (picked.length >= 6) break; // cap to ~6 words
+    if (picked.length === 0) {
+      picked.push(token);
+      continue;
+    }
+    if (!stop.has(token.toLowerCase())) picked.push(token);
+  }
+  if (picked.length === 0) picked.push(tokens[0] || "Chat");
+
+  // Title case (keep small words lower unless first)
+  const small = new Set(["and","or","for","to","in","on","at","of","a","an","the","with","about"]);
+  const titled = picked.map((w, i) => {
+    const lower = w.toLowerCase();
+    if (i > 0 && small.has(lower)) return lower;
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(" ");
+
+  return titled;
+}
+
+// Animate a chat title appearing one character at a time
+async function animateChatTitle(
+  update: (title: string) => void,
+  finalTitle: string,
+  delayMs: number = 25,
+) {
+  const text = (finalTitle || "").toString();
+  let current = "";
+  for (const ch of text) {
+    current += ch;
+    update(current);
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+}
+
 export default function ChatGPTClone() {
   const [chatHistories, setChatHistories] = useState<{ [key: string]: any[] }>({})
   // Ref to the Radix ScrollArea root for auto-scroll
@@ -166,9 +228,34 @@ export default function ChatGPTClone() {
       setInput("")
       setSelectedFiles([])
 
-      // Set title for new chats
+      // Generate a title for brand-new chats
       if (currentMessages.length === 0) {
-        setChatSessions((prev) => prev.map((c) => c.id === currentChatId ? { ...c, title: input.slice(0, 30) } : c))
+        const chatIdSnapshot = currentChatId
+        // Keep "New Chat" visible until we have a generated title, then animate it in
+
+        ;(async () => {
+          let finalTitle: string | undefined
+          try {
+            const res = await fetch('/api/title', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt: input })
+            })
+            if (res.ok) {
+              const data = await res.json()
+              finalTitle = data?.title
+            }
+          } catch {
+            // ignore API failure; we'll fall back
+          }
+
+        if (!finalTitle) finalTitle = generateChatTitle(input)
+
+          // Animate the title update
+          await animateChatTitle((title: string) => {
+            setChatSessions((prev) => prev.map((c) => c.id === chatIdSnapshot ? { ...c, title } : c))
+          }, finalTitle)
+        })()
       }
 
       try {
