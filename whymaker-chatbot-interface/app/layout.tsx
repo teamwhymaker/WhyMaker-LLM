@@ -4,9 +4,14 @@ import { GeistMono } from 'geist/font/mono'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.dev',
+  title: 'WhyMaker Chatbot',
+  description: 'AI-powered chatbot for WhyMaker - Get instant answers to your questions',
+  generator: 'WhyMaker',
+  icons: {
+    icon: '/WhyMaker Logo Mark-05.svg',
+    shortcut: '/WhyMaker Logo Mark-05.svg',
+    apple: '/WhyMaker Logo Mark-05.svg',
+  },
 }
 
 export default function RootLayout({
