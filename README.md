@@ -121,6 +121,46 @@ The chatbot has access to information from:
 - **OpenAI**: Natural language generation and conversation
 - **Vercel**: Hosting and deployment platform
 
+### **Environment Variables**
+Configure these environment variables in your Vercel project settings:
+
+#### **Required Variables**
+```bash
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Google Cloud Vertex AI Search
+VERTEX_PROJECT_ID=your_gcp_project_id
+VERTEX_LOCATION=global
+GCP_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"..."}
+
+# Google OAuth (for authentication)
+GOOGLE_CLIENT_ID=your_google_oauth_client_id
+GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
+GOOGLE_OAUTH_REDIRECT_URI=https://your-domain.vercel.app/api/auth/callback
+```
+
+#### **Vertex AI Search Configuration (choose one)**
+```bash
+# Option 1: Use Data Store ID
+VERTEX_DATA_STORE_ID=your_datastore_id
+
+# Option 2: Use Engine ID (if you created an App/Engine)
+VERTEX_ENGINE_ID=your_engine_id
+
+# Option 3: Use full Serving Config path (most explicit)
+VERTEX_SERVING_CONFIG=projects/PROJECT_ID/locations/LOCATION/collections/default_collection/dataStores/DATASTORE_ID/servingConfigs/default_search
+```
+
+#### **Optional Variables**
+```bash
+# Language configuration (defaults to en-US)
+VERTEX_LANGUAGE_CODE=en-US
+
+# Public variables (if needed for frontend)
+NEXT_PUBLIC_SITE_NAME=WhyMaker Chatbot
+```
+
 ### **Security**
 - **Authentication**: Optional OAuth integration
 - **Data Privacy**: All data stays within WhyMaker's control
