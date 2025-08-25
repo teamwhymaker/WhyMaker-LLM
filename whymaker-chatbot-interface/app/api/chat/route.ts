@@ -605,26 +605,40 @@ export async function POST(req: NextRequest) {
       `CONTEXT BEGIN\n${context}\n\n${uploadsContext ? `UPLOADED FILES\n${uploadsContext}\n` : ""}CONTEXT END`
     );
 
-    const messages: any[] = [
-      {
-        role: "system",
-        content: qa_system_prompt
-      }
-    ];
-
-    // Add chat history
-    for (const msg of chat_history) {
-      messages.push({
-        role: msg.role === "user" ? "user" : "assistant",
-        content: msg.content
-      });
+    // Prepare potential multimodal image parts for Smart models
+    const imageFiles = (uploadedFiles || []).filter(f => /\.(png|jpg|jpeg|webp|gif)$/i.test((f.name || "")));
+    const imageParts: any[] = [];
+    for (const img of imageFiles.slice(0, 3)) {
+      try {
+        const buf = Buffer.from(await img.arrayBuffer());
+        const ext = (img.name || "").toLowerCase().split(".").pop() || "png";
+        const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+        const b64 = buf.toString("base64");
+        imageParts.push({ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } });
+      } catch {}
     }
 
-    // Add current question
-    messages.push({
-      role: "user",
-      content: question
-    });
+    const messages: any[] = [
+      { role: "system", content: qa_system_prompt }
+    ];
+
+    for (const msg of chat_history) {
+      messages.push({ role: msg.role === "user" ? "user" : "assistant", content: msg.content });
+    }
+
+    // Add current question, multimodal if Smart and images present
+    const willUseMultimodal = imageParts.length > 0 && /^(?:o[134]|gpt-5)/i.test(model);
+    if (willUseMultimodal) {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: question || "Analyze the attached image(s)." },
+          ...imageParts
+        ]
+      });
+    } else {
+      messages.push({ role: "user", content: question });
+    }
 
     // Get response from OpenAI
     // Handle model-specific parameter constraints
@@ -639,7 +653,8 @@ export async function POST(req: NextRequest) {
     if (isReasoningModel) {
       // o1/o3/o4 and GPT‑5 series models use max_completion_tokens; some constrain temperature
       completionParams.temperature = 1;
-      completionParams.max_completion_tokens = 1400;
+      // Increase allowance for Smart models to reduce truncation
+      completionParams.max_completion_tokens = 2800;
     } else {
       // Traditional models support variable temperature and max_tokens
       completionParams.temperature = 0.6;

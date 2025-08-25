@@ -218,6 +218,10 @@ export default function ChatGPTClone() {
       accepted.push(f)
     }
     setSelectedFiles(accepted)
+    if (accepted.length > 0) {
+      // Automatically switch to Smart (multimodal-capable) when files are attached
+      setSelectedModel("Smart")
+    }
     if (rejected.length > 0) {
       showToast({
         title: "Some files were not added",
