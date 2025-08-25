@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
         accepted.push(f);
       }
       uploadedFiles = accepted;
+      console.log(`[Uploads] received=${uploadedFiles.length} accepted, totalBytes=${total}`);
     } else {
       const data = await req.json();
       question = data?.question;
@@ -570,6 +571,7 @@ export async function POST(req: NextRequest) {
         }
       }
       uploadsContext = chunks.join("\n\n");
+      console.log(`[Uploads] extractedChars=${uploadsContext.length} from files=[${uploadedFiles.map(u=>u.name).join(", ")} ]`);
     }
 
     console.log("[VertexSearch] contextChars=", context.length);
