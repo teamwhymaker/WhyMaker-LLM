@@ -10,6 +10,10 @@ export async function POST(req: NextRequest) {
   try {
     // Accept either JSON or multipart/form-data so users can attach files
     const contentType = req.headers.get("content-type") || "";
+    // Enforce small request size limits to avoid memory pressure in serverless
+    const MAX_FILE_BYTES = 4 * 1024 * 1024; // 4 MB per file
+    const MAX_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB per request
+    const MAX_FILES = 3;
     let question: string = "";
     let chat_history: any[] = [];
     let model: string = "gpt-4o-mini";
@@ -24,7 +28,17 @@ export async function POST(req: NextRequest) {
         try { chat_history = JSON.parse(historyRaw); } catch {}
       }
       const files = form.getAll("files");
-      uploadedFiles = files.filter((f): f is File => typeof f !== "string" && f instanceof File);
+      const fs = files.filter((f): f is File => typeof f !== "string" && f instanceof File);
+      let total = 0;
+      const accepted: File[] = [];
+      for (const f of fs.slice(0, MAX_FILES)) {
+        const size = (f as any).size ?? 0;
+        if (size > MAX_FILE_BYTES) continue;
+        if (total + size > MAX_TOTAL_BYTES) continue;
+        total += size;
+        accepted.push(f);
+      }
+      uploadedFiles = accepted;
     } else {
       const data = await req.json();
       question = data?.question;

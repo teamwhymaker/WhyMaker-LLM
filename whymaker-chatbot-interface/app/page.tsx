@@ -14,6 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ChevronDownIcon } from "lucide-react"
 import { AuthStatus } from "@/components/auth-status"
 import { useAuth } from "@/hooks/use-auth"
+import { useToast } from "@/hooks/use-toast"
 
 interface ChatSession {
   id: string
@@ -101,6 +102,12 @@ export default function ChatGPTClone() {
   
   // Get auth status
   const { authenticated, loading: authLoading } = useAuth()
+  const { toast: showToast } = useToast()
+
+  // Upload limits aligned with Vercel Serverless body limit (~4.5MB)
+  const MAX_FILE_BYTES = 4 * 1024 * 1024 // 4 MB per file (hard cap)
+  const MAX_TOTAL_BYTES = 4 * 1024 * 1024 // 4 MB total per request
+  const MAX_FILES = 3
 
   const messages = chatHistories[currentChatId] || []
 
@@ -194,8 +201,29 @@ export default function ChatGPTClone() {
   }, [currentChatId]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || [])
-    setSelectedFiles(files)
+    const incoming = Array.from(e.target.files || [])
+    let total = 0
+    const accepted: File[] = []
+    const rejected: string[] = []
+    for (const f of incoming.slice(0, MAX_FILES)) {
+      if (typeof f.size === 'number' && f.size > MAX_FILE_BYTES) {
+        rejected.push(`${f.name} (too large)`) 
+        continue
+      }
+      if (typeof f.size === 'number' && total + f.size > MAX_TOTAL_BYTES) {
+        rejected.push(`${f.name} (exceeds total limit)`) 
+        continue
+      }
+      total += (typeof f.size === 'number' ? f.size : 0)
+      accepted.push(f)
+    }
+    setSelectedFiles(accepted)
+    if (rejected.length > 0) {
+      showToast({
+        title: "Some files were not added",
+        description: `Limits: up to ${Math.round(MAX_TOTAL_BYTES/1024/1024)}MB total, ${Math.round(MAX_FILE_BYTES/1024/1024)}MB per file, ${MAX_FILES} files. Rejected: ${rejected.join(', ')}`,
+      })
+    }
   }, [])
 
   const triggerFileInput = useCallback(() => {
