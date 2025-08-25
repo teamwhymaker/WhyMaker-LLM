@@ -9,6 +9,10 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  experimental: {
+    // Avoid bundling heavy native dependencies into server components at build time
+    serverComponentsExternalPackages: ["pdf-parse", "mammoth"],
+  },
 }
 
 export default nextConfig

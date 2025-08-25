@@ -3,8 +3,6 @@ import { cookies } from "next/headers";
 import OpenAI from "openai";
 import { SearchServiceClient } from "@google-cloud/discoveryengine";
 import { GoogleAuth } from "google-auth-library";
-import pdfParse from "pdf-parse";
-import mammoth from "mammoth";
 
 export const runtime = "nodejs";
 
@@ -497,11 +495,13 @@ export async function POST(req: NextRequest) {
           const buf = Buffer.from(arrayBuf);
           const name = (file.name || "").toLowerCase();
           if (name.endsWith(".pdf")) {
-            const res = await pdfParse(buf);
+            const mod: any = await import("pdf-parse");
+            const res = await mod.default(buf);
             return String(res.text || "").trim();
           }
           if (name.endsWith(".docx") || name.endsWith(".doc")) {
-            const res = await mammoth.extractRawText({ buffer: buf });
+            const mammothMod: any = await import("mammoth");
+            const res = await mammothMod.default.extractRawText({ buffer: buf });
             return String(res.value || "").trim();
           }
           return buf.toString("utf8").trim();
