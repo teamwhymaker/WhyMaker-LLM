@@ -256,6 +256,8 @@ export default function ChatGPTClone() {
         ...prev,
         [currentChatId]: [...currentMessages, userMessage, initialBotMessage]
       }));
+      // Capture selected files for upload before clearing UI state
+      const filesToSend = selectedFiles
       setInput("")
       setSelectedFiles([])
 
@@ -290,18 +292,26 @@ export default function ChatGPTClone() {
       }
 
       try {
-        // Call the new Vercel API route
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            question: input,
-            chat_history: currentMessages.map(({ role, content }) => ({ role, content })),
-            model: modelMapping[selectedModel]
-          }),
-        });
+        // Call the API route. If files were attached, send as multipart/form-data
+        let response: Response
+        if (filesToSend && filesToSend.length > 0) {
+          const formData = new FormData()
+          formData.append('question', input)
+          formData.append('chat_history', JSON.stringify(currentMessages.map(({ role, content }) => ({ role, content }))))
+          formData.append('model', modelMapping[selectedModel])
+          for (const file of filesToSend) formData.append('files', file)
+          response = await fetch('/api/chat', { method: 'POST', body: formData })
+        } else {
+          response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              question: input,
+              chat_history: currentMessages.map(({ role, content }) => ({ role, content })),
+              model: modelMapping[selectedModel]
+            }),
+          })
+        }
 
         if (!response.ok) {
           throw new Error(`API error: ${response.status}`);

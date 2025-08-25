@@ -3,12 +3,36 @@ import { cookies } from "next/headers";
 import OpenAI from "openai";
 import { SearchServiceClient } from "@google-cloud/discoveryengine";
 import { GoogleAuth } from "google-auth-library";
+import pdfParse from "pdf-parse";
+import mammoth from "mammoth";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const { question, chat_history = [], model = "gpt-4o-mini" } = await req.json();
+    // Accept either JSON or multipart/form-data so users can attach files
+    const contentType = req.headers.get("content-type") || "";
+    let question: string = "";
+    let chat_history: any[] = [];
+    let model: string = "gpt-4o-mini";
+    let uploadedFiles: File[] = [];
+
+    if (/multipart\/form-data/i.test(contentType)) {
+      const form = await req.formData();
+      question = String(form.get("question") || "");
+      model = String(form.get("model") || model);
+      const historyRaw = form.get("chat_history");
+      if (typeof historyRaw === "string" && historyRaw.trim()) {
+        try { chat_history = JSON.parse(historyRaw); } catch {}
+      }
+      const files = form.getAll("files");
+      uploadedFiles = files.filter((f): f is File => typeof f !== "string" && f instanceof File);
+    } else {
+      const data = await req.json();
+      question = data?.question;
+      chat_history = data?.chat_history || [];
+      model = data?.model || model;
+    }
 
     if (!question) {
       return Response.json({ error: "Question is required" }, { status: 400 });
@@ -464,6 +488,37 @@ export async function POST(req: NextRequest) {
       .filter(Boolean)
       .join("\n\n");
 
+    // Extract text from any uploaded files and append to context
+    let uploadsContext = "";
+    if (Array.isArray(uploadedFiles) && uploadedFiles.length > 0) {
+      const extractTextFromFile = async (file: File): Promise<string> => {
+        try {
+          const arrayBuf = await file.arrayBuffer();
+          const buf = Buffer.from(arrayBuf);
+          const name = (file.name || "").toLowerCase();
+          if (name.endsWith(".pdf")) {
+            const res = await pdfParse(buf);
+            return String(res.text || "").trim();
+          }
+          if (name.endsWith(".docx") || name.endsWith(".doc")) {
+            const res = await mammoth.extractRawText({ buffer: buf });
+            return String(res.value || "").trim();
+          }
+          return buf.toString("utf8").trim();
+        } catch {
+          return "";
+        }
+      };
+      const chunks: string[] = [];
+      for (const f of uploadedFiles.slice(0, 4)) {
+        const text = await extractTextFromFile(f);
+        if (text) {
+          chunks.push(`File: ${f.name}\n${text.slice(0, 8000)}`);
+        }
+      }
+      uploadsContext = chunks.join("\n\n");
+    }
+
     console.log("[VertexSearch] contextChars=", context.length);
     if (snippets.length > 0) {
       console.log("[VertexSearch] firstSnippetSample=", (snippets[0] || "").slice(0, 200));
@@ -480,9 +535,10 @@ export async function POST(req: NextRequest) {
       "You are a world-class business and educational assistant, specifically tailored for the WhyMaker team. " +
       "Your primary goal is to help WhyMaker staff create high-quality materials, including sales scripts, " +
       "marketing collateral, lesson plans, and more.\n\n" +
-      "To answer the user's request, synthesize information from two sources: \n" +
+      "To answer the user's request, synthesize information from the following sources: \n" +
       "1. The provided internal WhyMaker documents (retrieved context below). \n" +
-      "2. Your general knowledge for broader context and information not available in the documents.\n\n" +
+      "2. Any text extracted from the user's uploaded files (if provided).\n" +
+      "3. Your general knowledge for broader context and information not available in the documents.\n\n" +
       "CRITICAL INSTRUCTIONS:\n" +
       "- Provide comprehensive, well-structured, and clear responses. Do not be overly brief.\n" +
       "- Use Markdown formatting (### Headers, - Bullet Points, and **bold text**) to improve readability, " +
@@ -491,7 +547,7 @@ export async function POST(req: NextRequest) {
       "- If the provided context doesn't contain a specific answer, clearly state that the information isn't " +
       "in WhyMaker's documents. Then, provide the best possible answer based on your general knowledge, " +
       "while noting it may not be specific to WhyMaker.\n\n" +
-      `CONTEXT BEGIN\n${context}\nCONTEXT END`
+      `CONTEXT BEGIN\n${context}\n\n${uploadsContext ? `UPLOADED FILES\n${uploadsContext}\n` : ""}CONTEXT END`
     );
 
     const messages: any[] = [
