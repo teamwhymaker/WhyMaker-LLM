@@ -504,6 +504,36 @@ export async function POST(req: NextRequest) {
             const res = await mammothMod.default.extractRawText({ buffer: buf });
             return String(res.value || "").trim();
           }
+          if (name.endsWith(".pptx")) {
+            try {
+              const JSZip: any = (await import("jszip")).default;
+              const zip = await JSZip.loadAsync(buf);
+              const slideNames = Object.keys(zip.files).filter((k: string) => /^ppt\/slides\/slide\d+\.xml$/.test(k));
+              const texts: string[] = [];
+              for (const s of slideNames) {
+                const xml: string = await zip.file(s).async("string");
+                const rx = /<a:t[^>]*>([^<]*)<\/a:t>/g;
+                let m: RegExpExecArray | null;
+                while ((m = rx.exec(xml))) {
+                  const t = (m[1] || "").trim();
+                  if (t) texts.push(t);
+                }
+              }
+              return texts.join("\n");
+            } catch {
+              // Fallback: unzip failure -> try treat as binary text
+              return "";
+            }
+          }
+          if (/(\.png|\.jpg|\.jpeg|\.webp|\.gif)$/i.test(name)) {
+            try {
+              const Tesseract: any = (await import("tesseract.js")).default;
+              const result = await Tesseract.recognize(buf, "eng");
+              return String(result?.data?.text || "").trim();
+            } catch {
+              return "";
+            }
+          }
           return buf.toString("utf8").trim();
         } catch {
           return "";

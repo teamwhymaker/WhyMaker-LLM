@@ -11,7 +11,7 @@ const nextConfig = {
   },
   experimental: {
     // Avoid bundling heavy native dependencies into server components at build time
-    serverComponentsExternalPackages: ["pdf-parse", "mammoth"],
+    serverComponentsExternalPackages: ["pdf-parse", "mammoth", "tesseract.js", "jszip", "fast-xml-parser"],
   },
 }
 

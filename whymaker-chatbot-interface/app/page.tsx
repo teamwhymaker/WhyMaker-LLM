@@ -597,7 +597,7 @@ export default function ChatGPTClone() {
                   multiple
                   className="hidden"
                   onChange={handleFileSelect}
-                  accept="image/*,.pdf,.doc,.docx,.txt"
+                  accept="image/*,.pdf,.doc,.docx,.txt,.pptx"
                 />
                 {selectedFiles.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -781,7 +781,7 @@ export default function ChatGPTClone() {
                     multiple
                     className="hidden"
                     onChange={handleFileSelect}
-                    accept="image/*,.pdf,.doc,.docx,.txt"
+                    accept="image/*,.pdf,.doc,.docx,.txt,.pptx"
                   />
                   {selectedFiles.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-2">
