@@ -544,9 +544,15 @@ export async function POST(req: NextRequest) {
               const vision: any = await import("@google-cloud/vision");
               const ImageAnnotatorClient = vision.ImageAnnotatorClient || vision.default?.ImageAnnotatorClient;
               const vClient = new ImageAnnotatorClient({ credentials });
-              const [res] = await vClient.textDetection({ image: { content: buf.toString("base64") } });
-              const text = (res?.fullTextAnnotation?.text || res?.textAnnotations?.[0]?.description || "").trim();
-              return text;
+              const content = buf.toString("base64");
+              const [[textRes], [labelRes]] = await Promise.all([
+                vClient.textDetection({ image: { content } }),
+                vClient.labelDetection({ image: { content } }),
+              ]);
+              const text = (textRes?.fullTextAnnotation?.text || textRes?.textAnnotations?.[0]?.description || "").trim();
+              const labels = (labelRes?.labelAnnotations || []).map((l: any) => l?.description).filter(Boolean).slice(0, 10);
+              const labelLine = labels.length ? `\nLabels: ${labels.join(", ")}` : "";
+              return `${text}${labelLine}`.trim();
             } catch {
               return "";
             }
