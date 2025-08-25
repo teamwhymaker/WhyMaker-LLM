@@ -541,9 +541,12 @@ export async function POST(req: NextRequest) {
           }
           if (/(\.png|\.jpg|\.jpeg|\.webp|\.gif)$/i.test(name)) {
             try {
-              const Tesseract: any = (await import("tesseract.js")).default;
-              const result = await Tesseract.recognize(buf, "eng");
-              return String(result?.data?.text || "").trim();
+              const vision: any = await import("@google-cloud/vision");
+              const ImageAnnotatorClient = vision.ImageAnnotatorClient || vision.default?.ImageAnnotatorClient;
+              const vClient = new ImageAnnotatorClient({ credentials });
+              const [res] = await vClient.textDetection({ image: { content: buf.toString("base64") } });
+              const text = (res?.fullTextAnnotation?.text || res?.textAnnotations?.[0]?.description || "").trim();
+              return text;
             } catch {
               return "";
             }
